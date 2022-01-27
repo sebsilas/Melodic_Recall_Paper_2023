@@ -1,0 +1,865 @@
+---
+title: "SungRecallStudyAnalysis"
+author: "Seb Silas"
+date: "12/20/2021"
+output: pdf_document
+---
+
+2. Write a paper on the experiment (using only the gold standard manual transcriptions). The main research question are: 
+- How do representations of melodies build up in memory? Compare the increase in similarity to target melody over repetitions, separate for pitch, rhythm and implied harmony. The Sloboda&Parker (1985) paper and Mullensiefen & Wiggins (2011) can serve as reference frame here.
+- What makes melodies difficult to remember? Extract FANTASTIC-feature from target melodies and use them as predictors for absolute level and increase of recall accuracy over repetitions. 
+
+
+- Can we predict the type of mistakes that people make early and late in the learning process? Does the type of mistake differ by singing ability level?
+
+
+---
+
+I think the main question can be framed as ‘What makes melodies difficult to remember?’
+The answer to this question would come from a statistical model that takes into account a) experimental conditions (i.e. midi/audio and no. of attempt), b) features of melodic structure, and c) individual differences (i.e. musical background and score on initial well-known tune task).
+The b) features of melodic structure model could be compared to the IRT models of the SAA and the PBET.  
+Results can also be compared to feature models from melodic recognition paradigms and a comparison between melodic production and recognition might be interesting.
+
+A second question could be “How do we learn melodies?” This would concern the time course of the 6 repetitions and identifying aspects that learned early vs. Late.
+Some of these are already addressed in this paper that uses the same paradigm but a much smaller dataset: http://www.doc.gold.ac.uk/~mas03dm/papers/MullensiefenWiggins_SlobodaFestschrift_proof_2011.pdf
+
+Then, I also attached a conference paper where I presented a prelim analysis of the data from 10 participants. Feel free to plagiarise from this.
+
+
+```{r echo = FALSE}
+library(xlsx)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(musicassessr)
+library(corrplot)
+library(ggplot2)
+library(lmerTest)
+library(MuMIn)
+library(visreg)
+library(gridExtra)
+library(ppcor)
+library(brms)
+library(psych)
+library(faraway)
+library(ggplot2)
+library(olsrr)
+library(itembankr)
+library(plyr)
+library(Hmisc)
+library(hrbrthemes)
+library(glmertree)
+library(ggbiplot)
+library(lavaan)
+
+options(scipen = 999)
+
+remove_prefix <- function(file_path, prefix = NULL) {
+  if(!is.null(prefix)) {
+    stringr::str_remove(file_path, prefix)
+  }
+}
+
+grab_melody <- function(melody_str, grab = character(), melody_group_name) {
+  
+  # grab = get particular column
+  mel <- melodies_with_features %>% 
+    filter(stimuli_name == melody_str, melody_group == melody_group_name)
+  
+  if(length(grab) > 0L) {
+    itembankr::str_mel_to_vector(mel %>% pull(grab))
+  } else {
+    mel
+  }
+}
+
+
+
+score_row <- function(dat, row) {
+  
+  mel_row <- dat %>% slice(row)
+  
+  pyin_style <- tibble(
+    note = itembankr::str_mel_to_vector(mel_row %>% pull(note)),
+    dur = itembankr::str_mel_to_vector(mel_row %>% pull(durations))
+        ) %>% mutate(
+          freq = hrep::midi_to_freq(note),
+          onset = c(0, cumsum(dur[1:length(dur)-1]))
+        )
+  
+  mel_group <- mel_row %>% pull(melody_group)
+  
+  meta_d <- mel_row %>% 
+    dplyr::select(midi_file, p_id, file_key, attempt, condition)
+
+  stimuli <- as_tibble(
+    grab_melody(mel_row %>% pull(stimuli_name), 
+                melody_group = mel_group)
+    )
+
+  scores <- musicassessr::score_melodic_production(
+    user_melody_input = pyin_style$note,
+     user_duration_input = pyin_style$dur,
+     user_onset_input = pyin_style$onset,
+     stimuli = itembankr::str_mel_to_vector(stimuli %>% pull(stimuli_pitch)),
+     stimuli_durations = itembankr::str_mel_to_vector(stimuli %>% pull(stimuli_durations)),
+     answer_meta_data = NA,
+     as_tb = TRUE)
+  
+  stimuli <- stimuli %>% dplyr::select(-stimuli_durations)
+  
+  cbind(stimuli, scores, meta_d)
+
+}
+
+
+# count_seg were used to do some debugging with harmcore and are not used in the main analysis, but may be useful in other contexts
+
+count_seg <- function(df, row) {
+  df_sub <- df %>% dplyr::select(stimuli_onset, stimuli_durations, stimuli_pitch) %>% dplyr::rename(dur = stimuli_durations, note = stimuli_pitch, onset = stimuli_onset)
+  expand_string_df(df_sub, row) %>% musicassessr::produce_extra_melodic_features() %>% dplyr::summarise(seg_count = sum(phrasbeg, na.rm = TRUE)) %>% pull(seg_count)
+}
+
+expand_string_df <- function(df, row_id) {
+  row <- df %>% slice(row_id)
+  out <- apply(row, MARGIN = 2, function(col) {
+    c <- unlist(col)
+    if(is.na(c)) {
+      NA
+    } else if(is.character(c)) {
+      itembankr::str_mel_to_vector(c)
+    } else {
+      c
+    }
+    
+  })
+  tibble::as_tibble(out)
+}
+
+grab_melodies <- function(melody_group) {
+  
+  if(melody_group == "A") {
+    melody_folder <- "Target_Melodies/melodies_group_a"
+  } else if(melody_group == "B") {
+    melody_folder <- "Target_Melodies/melodies_group_b"
+  } else stop("Unknown group")
+  
+  mel_list <- list.files(melody_folder, full.names = TRUE)
+  # grab melodies
+  purrr::map_dfr(mel_list, function(mel) {
+    
+    d <- read.csv2(mel, skip = 2) %>% dplyr::select(onset, durs, pitch)
+  
+  tibble(
+    stimuli_name = remove_prefix(substr(mel, start = 1L, stop = nchar(mel)-4L), paste0(melody_folder, "/")),
+   onset = paste0(d$onset, collapse = ","),
+   durations = paste0(d$durs, collapse = ","),
+   pitch = paste0(d$pitch, collapse = ","),
+   melody_group = melody_group)
+  
+  })
+}
+
+get_stimuli_name <- function(x) strsplit(x, "_")[[1]][2]
+
+# http://www.sthda.com/english/wiki/ggplot2-error-bars-quick-start-guide-r-software-and-data-visualization
+data_summary <- function(data, varname, groupnames){
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]]))
+      )
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+
+stdCoef.merMod <- function(object) {
+  # get standardised model coefficients:
+  # https://stackoverflow.com/questions/25142901/standardized-coefficients-for-lmer-model
+  sdy <- sd(getME(object,"y"))
+  sdx <- apply(getME(object,"X"), 2, sd)
+  sc <- fixef(object)*sdx/sdy
+  se.fixef <- coef(summary(object))[,"Std. Error"]
+  se <- se.fixef*sdx/sdy
+  return(data.frame(stdcoef=sc, stdse=se))
+}
+
+pretty_formula <- function(model) {
+  as.formula(
+    paste0("y ~ ", round(coefficients(model)[1],2), "", 
+      paste(sprintf(" %+.2f*%s ", 
+                    coefficients(model)[-1],  
+                    names(coefficients(model)[-1])), 
+            collapse="")
+    )
+  )
+}
+
+standardize <- function(x){
+  (x - mean(x, na.rm = TRUE))/sd(x, na.rm = TRUE)
+}
+
+create_cond_model <- function(no_attempt, predictor) {
+  sub_dat <- main %>% filter(attempt == no_attempt)
+  modela <- lm(similarity ~ ngrukkon + harmcore + rhythfuzz, data = sub_dat)
+  visreg(modela, predictor, gg = TRUE, type = "conditional") + xlim(0,1) + ylim(0,1)
+}
+
+
+```
+
+
+
+```{r}
+# grab participant trial info
+group_a <- read.xlsx(file = "Target_Melodies/VP_Versuche.xls", sheetIndex = 1L, endRow = 87L, colIndex = 1:13)
+group_b <- read.xlsx(file = "Target_Melodies/VP_Versuche.xls", sheetIndex = 1L, endRow = 87L, colIndex = 15:26)
+
+# grab p_ids
+group_a_p_ids <-  names(group_a)[grepl("VP", names(group_a))]
+group_b_p_ids <-  names(group_b)[grepl("VP", names(group_b))]
+
+melody_group_p_ids <- tibble(
+  p_id = group_a_p_ids,
+  melody_group = "A"
+) %>% rbind(tibble(p_id = group_b_p_ids, melody_group = rep("B", length(group_b_p_ids))))
+
+group_a_key <- tibble(
+  p_id = group_a_p_ids,
+  melody_group = "A")
+
+group_b_key <- tibble(
+  p_id = group_b_p_ids,
+  melody_group = "B")
+```
+
+
+```{r}
+
+# grab melody file info
+
+melodies_group_a <- grab_melodies("A")
+melodies_group_b <- grab_melodies("B")
+
+
+melodies_with_features <- rbind(melodies_group_a, melodies_group_b) %>% 
+  rowwise() %>% 
+  dplyr::mutate(
+  melody = paste0(diff(itembankr::str_mel_to_vector(pitch)), collapse = ","),
+  rel_freq = NA # itembankr expects this column, but set to NA and all is fine
+) %>% 
+  ungroup() %>% 
+  itembankr::get_melody_features() %>%
+    dplyr::rename(stimuli_onset = onset,
+           stimuli_durations = durations,
+           stimuli_pitch = pitch,
+           stimuli_melody = melody) %>%
+    dplyr::mutate(stimuli_melody = as.character(stimuli_melody))
+```
+
+```{r}
+# compile list of human rater files
+human_rater_files_list <- list.files("SungRecalls_Transcriptions2/MIDIs", full.names = TRUE, recursive = TRUE, include.dirs = FALSE, pattern = "\\.MID$")
+
+
+# grab the notes and durations from the human rater files and store in df
+dat <- purrr::map_dfr(human_rater_files_list, function(x) {
+  # tryCatch required since some audio files have no valid notes in them
+  tryCatch({
+   itembankr::midi_file_to_notes_and_durations(midi_file = x, prefix = "SungRecalls_Transcriptions2/MIDIs/")
+  },
+  error = function(cond) {
+    print(cond)
+    return(tibble::tibble(note = NA, durations = NA, midi_file = x))
+  })
+}) 
+
+
+# extract condition information from file names
+dat <- dat %>% dplyr::mutate(p_id = paste0("VP", str_extract(midi_file, "[^_]+")),
+                      file_key = substr(midi_file, 1L, nchar(midi_file)-4),
+                      attempt = substr(file_key, nchar(file_key), nchar(file_key)),
+                      condition = substr(sub("^[^_]*_", "", file_key), 1, 1)) %>% 
+  dplyr::rowwise() %>% dplyr::mutate(stimuli_name = get_stimuli_name(file_key))  %>% ungroup()
+
+
+# join melody and p_id tables together
+dat <- dat %>% left_join(melody_group_p_ids, by = "p_id") %>%
+  dplyr::left_join(melodies_with_features, by = c("stimuli_name", "melody_group"))
+
+#save(dat, file = 'dat.rda')
+load(file = 'dat.rda')
+
+```
+
+score the database by row
+
+```{r warning = FALSE, results = 'hide', echo =  FALSE}
+res <- purrr::map_dfr(1:nrow(dat), function(i) {
+  print(i)
+  suppressWarnings(score_row(dat, i))
+})
+#save(res, file = 'main_analysis_res.rda')
+load(file = 'main_analysis_res.rda')
+```
+
+```{r}
+main <- res %>% 
+  dplyr::select(-c(answer_meta_data, user_response_midi_note_off, pyin_pitch_track, onsets_noteoff, rel_freq, log_freq, note_precision, melody_dtw, mean_cents_deviation_from_nearest_stimuli_pitch, mean_cents_deviation_from_nearest_midi_pitch))
+
+# sort types out
+main <- main %>% 
+     mutate_at(c("opti3", 
+                 "ngrukkon", "harmcore", "rhythfuzz",
+                 "accuracy_octaves_allowed",
+                 "accuracy", 
+                 "correct_by_note_events_octaves_allowed_log_normal",
+                 "correct_by_note_events_octaves_allowed",
+                 "correct_by_note_events_log_normal",
+                 "correct_by_note_events",
+                 "no_errors_octaves_allowed",
+                 "no_correct_octaves_allowed",
+                 "no_errors",
+                 "no_correct",
+                 "no_note_events", 
+                 "stimuli_length", 
+                 "i.entropy"), as.numeric) %>% dplyr::rowwise() %>% dplyr::mutate(
+  unique_melody_name = paste0(c(stimuli_name, melody_group), collapse = "_")
+) %>% dplyr::ungroup()
+
+```
+
+```{r}
+#save(main, file = "main_analysis_res_with_features.rda")
+load(file = "main_analysis_res_with_features.rda")
+
+```
+
+## demographic PCA/FA
+
+
+grab and sort demographic stuff
+```{r}
+
+demographics <- read.csv('subjects_data.csv') %>% mutate(
+  p_id = paste0("VP", subjnr)
+)
+demographics$Group[demographics$Group == "1"] <- "A"
+demographics$Group[demographics$Group == "2"] <- "B"
+
+demographics$monthsinginstr[is.na(demographics$monthsinginstr)] <- 0
+demographics$instrume[is.na(demographics$instrume)] <- 0
+demographics$yearsins[is.na(demographics$yearsins)] <- 0
+demographics$practmom[is.na(demographics$practmom)] <- 0
+demographics$musmakmo[is.na(demographics$musmakmo)] <- 0
+demographics$practpas[is.na(demographics$practpas)] <- 0
+demographics$musmakpa[is.na(demographics$musmakpa)] <- 0
+demographics$paidless[is.na(demographics$paidless)] <- 0
+demographics$paidgigs[is.na(demographics$paidgigs)] <- 0
+demographics$gigs[is.na(demographics$gigs)] <- 0
+
+demographics_vars <- demographics %>% dplyr::select(-c(Group, subjnr, p_id))
+
+
+```
+
+attempt a FA on relevant vars
+
+d, hobbymus
+d, musicmag
+d, chorusin
+d, singinstr
+d, instrume
+
+c, hrsmusda
+c, cdsbuy
+c, cdsburn
+c, concerts
+c, singalon
+c, monthsinginstr
+c, yearsins
+c, practmom
+c, musmakmo
+c, practpas
+c, musmakpa
+c, paidless
+c, paidgigs
+c, gigs
+
+```{r}
+demographics_vars_for_fa <- demographics_vars %>% dplyr::select(-c(age, edulevel, sex))
+
+dem <- mixedCor(demographics_vars_for_fa, 
+                c = c("hrsmusda", "cdsbuy", 
+                "cdsburn", "concerts", "singalon", "monthsinginstr", "yearsins", "practmom", "musmakmo",
+                "practpas", "musmakpa", "paidless", "paidgigs", "gigs"),
+                d = c("hobbymus", "musicmag", "chorusin", "singinstr", "instrume"), 
+                use = "pairwise.complete.obs")
+
+
+dem_cors <- dem$rho
+
+# singinstr and monthsinginstr completely collinear
+
+```
+
+```{r}
+demographics_vars_for_fa2 <- demographics_vars_for_fa %>% dplyr::select(-hobbymus)
+
+dem2 <- mixedCor(demographics_vars_for_fa, 
+                c = c("hrsmusda", "cdsbuy", 
+                "cdsburn", "concerts", "singalon", "monthsinginstr", "yearsins", "practmom", "musmakmo", "practpas", "musmakpa", "paidless", "paidgigs", "gigs"),
+                d = c("musicmag", "chorusin", "singinstr", "instrume"), 
+                use = "pairwise.complete.obs")
+
+
+dem_cors2 <- dem2$rho
+
+psych::KMO(dem_cors2)
+          
+```
+
+NaNs in KMO matrix.. perhaps because of mixed data?
+
+
+```{r}
+fa.parallel(dem_cors2, n.obs = 31)
+```
+
+after discussion and attempting a 3 component solution, we decided to extract one factor (e.g., musical experience) because 3-factor solution is not easy to interpret/lots of cross loadings/high correlations between factors
+
+```{r}
+dem_pca <- principal(dem_cors2, n.obs = 31, nfactors = 1, cor = "mixed", use = "pairwise.complete.obs", scores = TRUE)
+dem_pca
+print.psych(dem_pca, cut = 0.3, sort = TRUE)
+```
+
+
+remove vars with low h2/loadings
+
+```{r}
+
+demographics_vars_for_fa3 <- demographics_vars_for_fa2 %>% dplyr::select(-c(musmakmo, practmom, cdsbuy, musicmag, hrsmusda, cdsburn, concerts, singalon, practpas, instrume, monthsinginstr))
+
+dem3 <- mixedCor(demographics_vars_for_fa3, 
+                c = c("yearsins", "musmakpa", "paidless", "paidgigs", "gigs"),
+                d = c("chorusin", "singinstr"),
+                use = "pairwise.complete.obs")
+
+
+dem_cors3 <- dem3$rho
+
+```
+
+
+```{r}
+KMO(dem_cors3)
+```
+
+same issue
+
+```{r}
+dem_pca3 <- principal(dem_cors3, n.obs = 31, nfactors = 1, cor = "mixed", use = "pairwise.complete.obs")
+dem_pca3
+#print.psych(dem_pca2, cut = 0.3, sort = TRUE)
+summary(dem_pca3)
+```
+
+
+extract scores
+
+```{r}
+pca_scores <- predict(dem_pca3, data = demographics_vars_for_fa3)
+pca_scores
+```
+
+crazy high?
+
+try lavaan approach for mixed data...
+
+```{r}
+
+demographics_vars_for_fa3_scaled <- demographics_vars_for_fa3 %>% mutate_all(~(scale(.) %>% as.vector))
+
+m1 <- paste("f1 =~ ",paste(names(demographics_vars_for_fa3_scaled),collapse = "+"))
+
+fit1 <- cfa(m1, data = demographics_vars_for_fa3_scaled, missing = "ML")
+
+fscores <- lavPredict(fit1)
+
+demographics_vars_for_fa3_scaled$fscores <- fscores
+
+summary(fit1)
+
+```
+this looks good
+
+merge demographic variables with the main dataset:
+
+
+```{r}
+demographics$musical_experience <- fscores
+demographics_sub <- demographics %>% dplyr::select(musical_experience, age, edulevel, sex, p_id)
+main <- main %>% left_join(demographics_sub, by = "p_id")
+```
+
+
+## melodies PCA
+
+let's assess the feasibility of PCA on the melodies. Note, there is a small sample size of melodies (N = 28, so this may not work, as with the demographics vars)
+
+grab only continuous melodic features
+
+```{r}
+main_contin <- dplyr::select_if(main, is.numeric)
+
+melodic_contin_features <- melodies_with_features %>% dplyr::select(
+  tonalness,                                        
+  tonal.clarity,                                    
+  tonal.spike,
+  i.entropy, 
+  step.cont.glob.var,                               
+  step.cont.glob.dir,                               
+  step.cont.loc.var,                                
+  d.entropy,                                        
+  d.eq.trans,                                       
+  mean_duration,                                    
+  mean_int_size,                                    
+  int_range,                                        
+  dir_change,                                       
+  mean_dir_change,                                  
+  int_variety,                                      
+  pitch_variety,                                    
+  mean_run_length,                              
+  span                                           
+)
+
+melodic_contin_features$i.entropy <- as.numeric(melodic_contin_features$i.entropy)
+
+M <- cor(melodic_contin_features, use = "pairwise.complete.obs")
+
+testRes <- cor.mtest(melodic_contin_features, conf.level = 0.95, use = "pairwise.complete.obs")
+
+## specialized the insignificant value according to the significant level
+corrplot(M, p.mat = testRes$p, sig.level = 0.05)
+
+
+```
+
+most of these correlations are non-significant, probably because there is such a small sample of melodies.. so PCA might not work
+
+try PCA with 4 features, based on literature:
+
+
+Baker (2017)
+(1) Interval entropy, defined via the relative frequency
+of each melodic interval in the leitmotive, 
+(2) Length, defined as the number of notes 
+(3) Tonalness, defined as the highest of the 24 correlation coefficients as generated by the Krumhansl- Schmuckler key finding algorithm (Krumhansl, 2001). 
+(4) Local step wise contour, defined as the mean absolute difference between adjacent values in the pitch contour vector of a melody.
+
+```{r}
+
+# create a unique melody name
+melodies_with_features <- melodies_with_features %>% dplyr::rowwise() %>% dplyr::mutate(
+  unique_melody_name = paste0(c(stimuli_name, melody_group), collapse = "_")
+) %>% dplyr::ungroup()
+
+
+# grab the relevant vars, based on the literature
+melodic_contin_4_features <- melodies_with_features %>% dplyr::select(
+step.cont.loc.var, i.entropy, tonalness,  N)
+melodic_contin_4_features$i.entropy <- as.numeric(melodic_contin_4_features$i.entropy)
+
+
+features_PCA <- principal(melodic_contin_4_features)
+summary(features_PCA)
+```
+
+this looks good. join with main DF
+
+```{r}
+
+features_PCA <- data.frame(melodic_complexity = as.vector(features_PCA$scores), 
+                           unique_melody_name = melodies_with_features$unique_melody_name)
+
+
+main <- main %>% left_join(features_PCA, by = "unique_melody_name")
+
+```
+
+
+## look at dvs
+
+
+```{r}
+hist_dvs <- main %>% dplyr::select(opti3, ngrukkon, rhythfuzz, harmcore, musical_experience, melodic_complexity)
+
+itembankr::hist_item_bank(hist_dvs)
+```
+
+These look fairly typical for similarity measures, but harmcore has a binomial quality (tending towards 0 or 1)
+
+check for potential non-linearities:
+
+```{r}
+main_contin_small <- main_contin %>% dplyr::select(
+  -c(N, no_note_events, no_correct, no_errors, no_correct_octaves_allowed, no_errors_octaves_allowed, correct_by_note_events, correct_by_note_events_log_normal, correct_by_note_events_octaves_allowed, correct_by_note_events_octaves_allowed_log_normal, accuracy, accuracy_octaves_allowed)  )
+
+main_contin_v_small <- main_contin_small %>% dplyr::select(stimuli_length, opti3, ngrukkon, harmcore, rhythfuzz)
+
+psych::pairs.panels(main_contin_v_small)
+```
+
+when modelling, potentially some terms may be better described by their log
+
+
+visualise mean scores against attempt
+
+
+```{r}
+
+by_attempt <- main %>% dplyr::select(attempt, opti3, ngrukkon, harmcore, rhythfuzz)  %>% tidyr::pivot_longer(cols = c("opti3", "ngrukkon", "harmcore", "rhythfuzz")) %>% dplyr::rename(measure = name) %>% data_summary(varname = "value", groupnames = c("measure", "attempt"))
+
+
+ggplot(by_attempt, aes(x = attempt, y = value, group=measure, color=measure)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin=value-se, ymax=value+se), width=.2, position=position_dodge(0.05), color = "black") +
+  geom_line(linetype = "dashed", color = "black", alpha = .5) +
+  geom_smooth(method = "lm", size = .5, se = FALSE) + 
+  ylab("mean") +
+  facet_wrap(~measure, nrow = 2)
+```
+
+this seems to suggest general hypotheses/previous findings in literature
+
+check cors:
+
+```{r}
+sub_cor_mat <- main %>% dplyr::select(rhythfuzz, ngrukkon, harmcore, attempt)
+sub_cor_mat$attempt <- as.numeric(subb$attempt)
+subb_mcomp <- subb[complete.cases(subb), ]
+
+# NB.. complete cases... try different partial cor function?
+
+
+rcorr(as.matrix(subb_mcomp), type = "pearson")
+
+```
+
+harmcore not correlated with attempt, as expected
+
+```{r}
+pcor(subb_mcomp, method = "pearson")
+```
+
+and when taking into account (ppcor) the other dvs 
+
+
+assess at participant level i.e., visualise performance outcomes facetted on demographic predictors 
+
+```{r}
+vp_summary <- main %>% dplyr::group_by(p_id, attempt) %>% 
+  dplyr::summarise(mean_opti3 = mean(opti3),
+                   mean_harmcore = mean(harmcore),
+                   mean_rhythfuzz = mean(rhythfuzz),
+                   mean_ngrukkon = mean(ngrukkon),
+                   musical_experience = musical_experience)
+```
+
+
+```{r}
+vp_summary %>%
+  ggplot(aes(x = as.numeric(attempt), y  = as.numeric(mean_opti3))) +
+    geom_smooth(method = "lm", size = .5) +
+    geom_point(aes(color = musical_experience)) +
+    facet_wrap(~reorder(p_id, musical_experience), nrow = 2)
+```
+
+
+```{r}
+vp_summary %>%
+  ggplot(aes(x = as.numeric(attempt), y  = as.numeric(mean_harmcore))) +
+    geom_smooth(method = "lm", size = .5) +
+    geom_point(aes(color = musical_experience)) +
+    facet_wrap(~reorder(p_id, musical_experience), nrow = 2)
+```
+to me, this suggests that the improvement of harmonic performance across trials is very dependent on the person, but not musical experience. many have very steep slopes, but either positive or negative (e.g., the person with most musical experience has a positive slope, but the two rating behind her in experience have negative slopes). so maybe there is some other factor that really determines whether someone improves (or does not improve). otherwise, everything just seems to get averaged out and make it look like harmonic performace does not improve across trials at all; but clearly it does for several people.
+
+
+```{r}
+vp_summary %>%
+  ggplot(aes(x = as.numeric(attempt), y  = as.numeric(mean_ngrukkon))) +
+    geom_smooth(method = "lm", size = .5) +
+    geom_point(aes(color = musical_experience)) +
+    facet_wrap(~reorder(p_id, musical_experience), nrow = 2)
+```
+for ngrukkon, it does look like maybe as people become more musically trained, they improve more (at a higher rate) across attempts
+
+
+```{r}
+vp_summary %>%
+  ggplot(aes(x = as.numeric(attempt), y  = as.numeric(mean_rhythfuzz))) +
+    geom_smooth(method = "lm", size = .5) +
+    geom_point(aes(color = musical_experience)) +
+    facet_wrap(~reorder(p_id, musical_experience), nrow = 2)
+```
+not so much for rhythfuzz
+
+attempt some formal modelling
+
+first, a naive standard lm 
+
+```{r}
+m1.basic.lm <- lm(opti3 ~ as.numeric(attempt) + melody_group + condition + melodic_complexity, data = main)
+summary(m1.basic.lm)
+```
+with this kind of naive setup, all predictors sig, except melody group, which is good, because it suggests there is no bias in what melody the participants saw
+
+but now let's try to fit a mixed effects model, with both melody and p_id as random effects
+
+
+```{r}
+# hist(log(main$melodic_complexity))
+m1 <- lmer(opti3 ~ as.numeric(attempt) + melody_group + condition + melodic_complexity + (1 | unique_melody_name) + (1 | p_id), data = main)
+summary(m1)
+r.squaredGLMM(m1)
+```
+
+melodic complexity isn't a significant predictor any more
+
+with attempt nested inside p_id?
+
+```{r}
+
+m1.2 <- lmer(opti3 ~ melody_group + condition + melodic_complexity + (1 | unique_melody_name) + (1 | attempt/p_id), data = main)
+summary(m1.2)
+r.squaredGLMM(m1.2)
+```
+
+
+
+```{r}
+
+
+m1.3 <- lmer(opti3 ~ melody_group + condition + melodic_complexity + (1 | unique_melody_name) + (1 | attempt/p_id), data = main)
+
+summary(m1.3)
+
+
+r.squaredGLMM(m1.3)
+
+```
+
+```{r}
+
+
+m1.4 <- lmer(opti3 ~ attempt + condition + melodic_complexity + (1 | unique_melody_name) + (1 | p_id/melody_group), data = main)
+
+summary(m1.4)
+
+
+r.squaredGLMM(m1.4)
+
+```
+
+
+```{r}
+anova(m1, m1.2, m1.3, m1.4)
+```
+
+
+models for each consituent of opti3 separately
+
+```{r}
+m2.ng <- lmer(ngrukkon ~ melody_group + condition + melodic_complexity + attempt + (1 | unique_melody_name) + (1 | p_id), data = main)
+
+summary(m2.ng)
+
+r.squaredGLMM(m2.ng)
+
+```
+
+
+```{r}
+m2.hc <- lmer(harmcore ~ melody_group + condition + melodic_complexity + attempt + (1 | unique_melody_name) + (1 | p_id), data = main)
+
+summary(m2.hc)
+
+
+r.squaredGLMM(m2.hc)
+
+```
+
+
+```{r}
+
+m2.rf <- lmer(rhythfuzz ~ melody_group + condition + melodic_complexity + attempt + (1 | unique_melody_name) + (1 | p_id), data = main)
+
+summary(m2.rf)
+
+
+r.squaredGLMM(m2.rf)
+
+```
+
+
+lmertrees
+
+```{r}
+main$musical_experience <- as.numeric(main$musical_experience)
+main$p_id <- as.factor(main$p_id)
+main$unique_melody_name <- as.factor(main$unique_melody_name)
+
+
+dat_sub <- main %>% dplyr::select(opti3, ngrukkon, harmcore, rhythfuzz, attempt, melody_group, condition, melodic_complexity, p_id, unique_melody_name, age, edulevel, sex, musical_experience)
+
+dat_sub$opti3[dat_sub$opti3 < 0] <- 0
+#dat_sub$opti3[is.na(dat_sub$opti3)] <- mean(dat_sub$opti3, na.rm = TRUE)
+
+```
+
+
+
+```{r}
+# as.numeric(age) + as.factor(edulevel) + as.factor(sex)
+
+dat_sub <- main %>% dplyr::select(opti3, attempt, melody_group, condition, melodic_complexity, unique_melody_name, p_id, musical_experience) %>% mutate (
+  attempt = as.numeric(attempt),
+  melody_group = as.factor(melody_group),
+  condition = as.factor(condition)
+)
+
+```
+
+```{r}
+## fit normal linear regression LMM tree for continuous outcome
+
+lt <- lmertree(opti3 ~ attempt + melody_group + condition + melodic_complexity | (1 | unique_melody_name) + (1 | p_id) | musical_experience, cluster = p_id, data = dat_sub)
+
+```
+
+
+```{r}
+plot(lt, which = "tree")
+```
+
+fitted = "marginal" should should a more useful plot, but alas, it does not work..
+
+```{r}
+plot(lt, which = "tree", fitted = "marginal")
+```
+
+
+
+
+
+
+
+
+
+
