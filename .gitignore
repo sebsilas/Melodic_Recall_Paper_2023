@@ -1,0 +1,15 @@
+.Rproj.user
+.Rhistory
+.Rdata
+.httr-oauth
+.DS_Store
+.Renviron
+scripts
+tmp
+letters
+PERSONAL_README.md
+legacy
+legacy_manuscripts
+dat/
+dat/output_data/legacy
+letters
