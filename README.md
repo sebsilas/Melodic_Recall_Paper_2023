@@ -1,7 +1,6 @@
-# Melodic Recall Experiment
+This repository contains the data and analyses for the following manuscript:
 
-A minimal repository for the Melodic Recall experiment
+Silas, S., & Müllensiefen, D. (2023). Learning and recalling melodies: A computational investigation using the melodic recall paradigm. In review, Music Perception.
 
-NB: use last load() in the .rmd file to load in the processed data, then things should run from there (you should also probably run the cell which imports all the packages)
 
-TODO: Look at lmertree's
+N.B. `SungRecalls_Transcriptions2` contains octave corrected transcriptions (the professional transcriber put the original files, `SungRecalls_Transcriptions`, in the same octave)

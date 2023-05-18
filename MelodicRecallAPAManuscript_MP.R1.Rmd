@@ -1,0 +1,635 @@
+---
+title             : "Learning and recalling melodies: a computational investigation using the melodic recall paradigm."
+shorttitle        : "Learning and recalling melodies"
+
+author: 
+  - name          : "Sebastian Silas"
+    affiliation   : "1,2"
+    role:
+      - Writing - Original Draft Preparation
+      - Writing - Review & Editing
+      - Visualization
+      - Formal Analysis
+      - Conceptualization
+  - name          : "Daniel Müllensiefen"
+    affiliation   : "1,2"
+    corresponding : yes    # Define only one corresponding author
+    address       : "Department of Psychology, Goldsmiths, University of London, 8 Lewisham Way, London SE14 6NW, United Kingdom"
+    email         : "D.Mullensiefen@gold.ac.uk"
+    role:        
+      - Conceptualization
+      - Data Collection
+      - Data Pre-Processing
+      - Writing - Original Draft Preparation
+      - Writing - Review & Editing
+      - Formal Analysis
+      
+affiliation:
+  - id            : "1"
+    institution   : "Goldsmiths, University of London, London, UK"
+  - id            : "2"
+    institution   : "Hochschule für Musik, Theater und Medien, Hannover, Germany"
+
+authornote: |
+  Sebastian Silas has been supported by a doctoral scholarship from the Studienstiftung des deutschen Volkes. This project has been partly supported by funding from the Deutsche Forschungsgemeinschaft (DFG, MU 2722/1-1) awarded to Daniel Müllensiefen. No potential competing interest was reported by the authors. The authors would like to thank Ani Patel and Niels Verosky for their invaluable feedback on this manuscript.
+
+abstract: |
+  Using melodic recall paradigm data, we describe an algorithmic approach to assessing melodic learning across multiple attempts. In a first simulation experiment, we show how similarity measures are preferable to assess melodic recall compared to previously-utilised accuracy measures. In Experiment 2, with up to six attempts per melody, 31 participants sang back 28 melodies (length 15-48) presented either as a piano sound or a vocal audio excerpt from real pop songs. Our analysis aimed to predict the similarity between the target melody and participants’ sung recalls across successive attempts. Similarity was measured with different algorithmic measures reflecting various structural aspects of melodies (e.g., tonality, intervallic) and overall similarity. However, previous melodic recall research mentioned, but did not model, that the number of recalled notes increases across attempts, aside from overall performance accuracy, potentially driving overall performance. Consequently, we modelled how the number of recalled notes change alongside similarity. In a mediation analysis, we show how a melody's length (but not other melodic features) is the main driver of similarity via the number of recalled notes. Therefore, musical features may be secondary to sheer length constraints when learning melodies long enough to require several attempts to recall in full.
+  
+keywords          : "melodic recall, melodic memory, melody learning, working memory, melodic similarity"
+
+bibliography      : "melodic_recall.bib"
+
+floatsintext      : no
+linenumbers       : yes
+draft             : no
+mask              : no
+
+figurelist        : yes
+tablelist         : yes
+footnotelist      : no
+
+classoption       : "man"
+output: 
+  papaja::apa6_word:
+
+disambiguate_authors: no
+
+---
+
+
+```{r setup, include = FALSE, warning = FALSE, message = FALSE}
+
+# See https://stackoverflow.com/questions/31182147/how-to-suppress-automatic-table-name-and-number-in-an-rmd-file-using-xtable-or
+
+library(papaja)
+library(tidyverse)
+library(readxl)
+library(xlsx)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(corrplot)
+library(ggplot2)
+library(lmerTest)
+library(MuMIn)
+library(visreg)
+library(gridExtra)
+library(ppcor)
+library(brms)
+library(psych)
+library(faraway)
+library(ggplot2)
+library(olsrr)
+library(plyr)
+library(Hmisc)
+library(hrbrthemes)
+library(glmertree)
+library(lavaan)
+library(apaTables)
+library(gridExtra)
+library(itembankr)
+library(musicassessr)
+library(broom)
+library(corx)
+library(flextable)
+library(diagram)
+library(pander)
+library(naniar)
+library(gm)
+library(gensim)
+library(car)
+library(r2glmm)
+
+
+
+```
+
+
+```{r analysis-preferences}
+set.seed(42)
+knitr::opts_chunk$set(cache.extra = knitr::rand_seed)
+```
+
+
+```{r include = FALSE}
+
+options(scipen = 999)
+
+
+remove_prefix <- function(file_path, prefix = NULL) {
+  if(!is.null(prefix)) {
+    stringr::str_remove(file_path, prefix)
+  }
+}
+
+grab_melody <- function(melody_str, grab = character(), melody_group_name) {
+  
+  # grab = get particular column
+  mel <- melodies_with_features %>% 
+    filter(stimuli_name == melody_str, melody_group == melody_group_name)
+  
+  if(length(grab) > 0L) {
+    itembankr::str_mel_to_vector(mel %>% pull(grab))
+  } else {
+    mel
+  }
+}
+
+
+
+score_row <- function(dat, row) {
+  
+  mel_row <- dat %>% slice(row)
+  
+  pyin_style <- tibble(
+    note = itembankr::str_mel_to_vector(mel_row %>% pull(note)),
+    dur = itembankr::str_mel_to_vector(mel_row %>% pull(durations))
+        ) %>% mutate(
+          freq = hrep::midi_to_freq(note),
+          onset = c(0, cumsum(dur[1:length(dur)-1]))
+        )
+  
+  mel_group <- mel_row %>% pull(melody_group)
+  
+  meta_d <- mel_row %>% 
+    dplyr::select(midi_file, p_id, file_key, attempt, condition)
+
+  stimuli <- as_tibble(
+    grab_melody(mel_row %>% pull(stimuli_name), 
+                melody_group = mel_group)
+    )
+
+  scores <- musicassessr::score_melodic_production(
+    user_melody_input = pyin_style$note,
+     user_duration_input = pyin_style$dur,
+     user_onset_input = pyin_style$onset,
+     stimuli = itembankr::str_mel_to_vector(stimuli %>% pull(stimuli_pitch)),
+     stimuli_durations = itembankr::str_mel_to_vector(stimuli %>% pull(stimuli_durations)),
+     answer_meta_data = NA,
+     as_tb = TRUE)
+  
+  stimuli <- stimuli %>% dplyr::select(-stimuli_durations)
+  
+  cbind(stimuli, scores, meta_d)
+
+}
+
+
+# count_seg were used to do some debugging with harmcore and are not used in the main analysis, but may be useful in other contexts
+
+count_seg <- function(df, row) {
+  df_sub <- df %>% dplyr::select(stimuli_onset, stimuli_durations, stimuli_pitch) %>% dplyr::rename(dur = stimuli_durations, note = stimuli_pitch, onset = stimuli_onset)
+  expand_string_df(df_sub, row) %>% musicassessr::produce_extra_melodic_features() %>% dplyr::summarise(seg_count = sum(phrasbeg, na.rm = TRUE)) %>% pull(seg_count)
+}
+
+expand_string_df <- function(df, row_id) {
+  row <- df %>% slice(row_id)
+  out <- apply(row, MARGIN = 2, function(col) {
+    c <- unlist(col)
+    if(is.na(c)) {
+      NA
+    } else if(is.character(c)) {
+      itembankr::str_mel_to_vector(c)
+    } else {
+      c
+    }
+    
+  })
+  tibble::as_tibble(out)
+}
+
+grab_melodies <- function(melody_group) {
+  
+  if(melody_group == "A") {
+    melody_folder <- "dat/Target_Melodies/melodies_group_a"
+  } else if(melody_group == "B") {
+    melody_folder <- "dat/Target_Melodies/melodies_group_b"
+  } else stop("Unknown group")
+  
+  mel_list <- list.files(melody_folder, full.names = TRUE)
+  # grab melodies
+  purrr::map_dfr(mel_list, function(mel) {
+    
+    d <- read.csv2(mel, skip = 2) %>% dplyr::select(onset, durs, pitch)
+  
+  tibble(
+    stimuli_name = remove_prefix(substr(mel, start = 1L, stop = nchar(mel)-4L), paste0(melody_folder, "/")),
+   onset = paste0(d$onset, collapse = ","),
+   durations = paste0(d$durs, collapse = ","),
+   pitch = paste0(d$pitch, collapse = ","),
+   melody_group = melody_group)
+  
+  })
+}
+
+get_stimuli_name <- function(x) strsplit(x, "_")[[1]][2]
+
+# http://www.sthda.com/english/wiki/ggplot2-error-bars-quick-start-guide-r-software-and-data-visualization
+data_summary <- function(data, varname, groupnames){
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]]))
+      )
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+
+stdCoef.merMod <- function(object) {
+  # get standardised model coefficients:
+  # https://stackoverflow.com/questions/25142901/standardized-coefficients-for-lmer-model
+  sdy <- sd(getME(object,"y"))
+  sdx <- apply(getME(object,"X"), 2, sd)
+  sc <- fixef(object)*sdx/sdy
+  se.fixef <- coef(summary(object))[,"Std. Error"]
+  se <- se.fixef*sdx/sdy
+  return(data.frame(stdcoef=sc, stdse=se))
+}
+
+pretty_formula <- function(model) {
+  as.formula(
+    paste0("y ~ ", round(coefficients(model)[1],2), "", 
+      paste(sprintf(" %+.2f*%s ", 
+                    coefficients(model)[-1],  
+                    names(coefficients(model)[-1])), 
+            collapse="")
+    )
+  )
+}
+
+standardize <- function(x){
+  (x - mean(x, na.rm = TRUE))/sd(x, na.rm = TRUE)
+}
+
+create_cond_model <- function(no_attempt, predictor) {
+  sub_dat <- main %>% filter(attempt == no_attempt)
+  modela <- lm(similarity ~ ngrukkon + harmcore + rhythfuzz, data = sub_dat)
+  visreg(modela, predictor, gg = TRUE, type = "conditional") + xlim(0,1) + ylim(0,1)
+}
+
+
+```
+
+
+```{r}
+
+
+plot_descriptive_vs_predicted_participant <- function(model, pretty_var_name, var_name) {
+  
+  var_name <- as.name(var_name)
+
+  prds <- tibble(pred = predict(model), attempt = main2$attempt, p_id = main2$p_id)
+  
+  prds <- prds %>%
+    dplyr::group_by(attempt, p_id) %>%
+    dplyr::summarise(pred = mean(pred, na.rm = TRUE)) %>%
+    ungroup()
+
+
+  mean_by_attempt <- main2 %>%
+    dplyr::group_by(attempt, p_id) %>%
+    dplyr::summarise(
+      !!var_name := mean(!!var_name, na.rm = TRUE)
+      ) %>%
+    ungroup()
+  
+
+  attempt_pred_vs_descript <- cbind(mean_by_attempt,
+                                    prds %>% dplyr::select(-c(attempt, p_id))) %>%
+      dplyr::rename(Attempt = attempt,
+                  `Predicted Model Values` = pred,
+                  `Empirical Descriptive Values` = !! var_name) %>%
+    pivot_longer(`Empirical Descriptive Values`:`Predicted Model Values`, names_to = "Name", values_to = pretty_var_name)
+  
+  
+
+  ggplot(attempt_pred_vs_descript, aes(x = Attempt, y = !! as.name(pretty_var_name), group = Name, color = Name, linetype = Name)) +
+    geom_point() +
+    geom_line() +
+    theme(legend.title=element_blank()) +
+    facet_wrap(~p_id)
+
+}
+
+
+
+plot_descriptive_vs_predicted_melody <- function(model, pretty_var_name, var_name) {
+  
+  var_name <- as.name(var_name)
+
+  prds <- tibble(pred = predict(model), attempt = main2$attempt, unique_melody_name = main2$unique_melody_name)
+  
+  prds <- prds %>%
+    dplyr::group_by(attempt, unique_melody_name) %>%
+    dplyr::summarise(pred = mean(pred, na.rm = TRUE)) %>%
+    ungroup()
+
+
+  mean_by_attempt <- main2 %>%
+    dplyr::group_by(attempt, unique_melody_name) %>%
+    dplyr::summarise(
+      !!var_name := mean(!!var_name, na.rm = TRUE)
+      ) %>%
+    ungroup()
+  
+
+  attempt_pred_vs_descript <- cbind(mean_by_attempt,
+                                    prds %>% dplyr::select(-c(attempt, unique_melody_name))) %>%
+      dplyr::rename(Attempt = attempt,
+                  `Predicted Model Values` = pred,
+                  `Empirical Descriptive Values` = !! var_name) %>%
+    pivot_longer(`Empirical Descriptive Values`:`Predicted Model Values`, names_to = "Name", values_to = pretty_var_name)
+  
+  
+
+  ggplot(attempt_pred_vs_descript, aes(x = Attempt, y = !! as.name(pretty_var_name), group = Name, color = Name, linetype = Name)) +
+    geom_point() +
+    geom_line() +
+    theme(legend.title=element_blank()) +
+    facet_wrap(~unique_melody_name)
+
+}
+
+```
+
+
+
+```{r include = FALSE}
+
+# grab participant trial info
+group_a <- read.xlsx(file = "dat/Target_Melodies/VP_Versuche.xls", sheetIndex = 1L, endRow = 87L, colIndex = 1:13)
+group_b <- read.xlsx(file = "dat/Target_Melodies/VP_Versuche.xls", sheetIndex = 1L, endRow = 87L, colIndex = 15:26)
+
+# grab p_ids
+group_a_p_ids <-  names(group_a)[grepl("VP", names(group_a))]
+group_b_p_ids <-  names(group_b)[grepl("VP", names(group_b))]
+
+melody_group_p_ids <- tibble(
+  p_id = group_a_p_ids,
+  melody_group = "A"
+) %>% rbind(tibble(p_id = group_b_p_ids, melody_group = rep("B", length(group_b_p_ids))))
+
+group_a_key <- tibble(
+  p_id = group_a_p_ids,
+  melody_group = "A")
+
+group_b_key <- tibble(
+  p_id = group_b_p_ids,
+  melody_group = "B")
+```
+
+
+```{r include = FALSE}
+
+# grab melody file info
+melodies_group_a <- grab_melodies("A")
+melodies_group_b <- grab_melodies("B")
+
+
+melodies_with_features <- rbind(melodies_group_a, melodies_group_b) %>% 
+  dplyr::rename(abs_melody = pitch) %>% 
+  itembankr::get_melody_features() %>%
+    dplyr::rename(stimuli_onset = onset,
+           stimuli_durations = durations,
+           stimuli_pitch = abs_melody,
+           stimuli_melody = melody) %>%
+    dplyr::mutate(stimuli_melody = as.character(stimuli_melody))
+
+```
+
+
+```{r eval = FALSE}
+# compute krumhansl tone profiles for each melody/segmentation
+# the idea here was to check whether harmony really "varies" in the stimuli. this might explain why harmcore does not increase across trials
+
+implicit_harm_for_melody <- function(row) {
+
+  m <- melodies_with_features %>% dplyr::select(stimuli_pitch, stimuli_durations, stimuli_onset) %>%
+      dplyr::rename(pitch = stimuli_pitch, durations = stimuli_durations, onset = stimuli_onset) %>% 
+  expand_string_df(row) %>% itembankr::segment_phrase()
+  
+  r <- musicassessr::get_implicit_harmonies(m$pitch, cumsum(m$phrasbeg))
+  r2 <- r %>% dplyr::pull(key)
+  
+  tibble(harm_res = list(r), harm = paste0(r2, collapse = ","), no_harms = length(unique(r2)), df = list(m))
+
+}
+
+implicit_harms <- purrr::map_dfr(1:nrow(melodies_with_features), implicit_harm_for_melody)
+
+melodies_with_features$no_harms <- implicit_harms$no_harms
+
+```
+
+
+
+
+
+```{r eval = FALSE, include = FALSE}
+# compile list of human rater files
+human_rater_files_list <- list.files("dat/SungRecalls_Transcriptions2/MIDIs", full.names = TRUE, recursive = TRUE, include.dirs = FALSE, pattern = "\\.MID$")
+
+
+# grab the notes and durations from the human rater files and store in df
+dat <- purrr::map_dfr(human_rater_files_list, function(x) {
+  # tryCatch required since some audio files have no valid notes in them
+  tryCatch({
+   itembankr::midi_file_to_notes_and_durations(midi_file = x, prefix = "dat/SungRecalls_Transcriptions2/MIDIs/")
+  },
+  error = function(cond) {
+    print(cond)
+    return(tibble::tibble(note = NA, durations = NA, midi_file = x))
+  })
+}) 
+
+
+# extract condition information from file names
+dat <- dat %>% dplyr::mutate(p_id = paste0("VP", str_extract(midi_file, "[^_]+")),
+                      file_key = substr(midi_file, 1L, nchar(midi_file)-4),
+                      attempt = substr(file_key, nchar(file_key), nchar(file_key)),
+                      condition = substr(sub("^[^_]*_", "", file_key), 1, 1)) %>% 
+                      dplyr::rowwise() %>% 
+                      dplyr::mutate(stimuli_name = get_stimuli_name(file_key)) %>% 
+                      ungroup()
+
+
+# join melody and p_id tables together
+dat <- dat %>% 
+  left_join(melody_group_p_ids, by = "p_id") %>%
+  dplyr::left_join(melodies_with_features, by = c("stimuli_name", "melody_group"))
+
+#save(dat, file = 'dat/output_data/dat.rda')
+
+```
+
+```{r}
+load(file = 'dat/output_data/dat.rda')
+```
+
+
+```{r warning = FALSE, results = 'hide', echo =  FALSE, eval = FALSE}
+# score the database by row
+res <- purrr::map_dfr(1:nrow(dat), function(i) {
+  print(i)
+  suppressWarnings(score_row(dat, i))
+})
+
+save(res, file = 'dat/output_data/main_analysis_res.rda')
+
+```
+
+```{r}
+load(file = 'dat/output_data/main_analysis_res.rda')
+```
+
+```{r eval = FALSE}
+main <- res %>% 
+  dplyr::select(-c(answer_meta_data, user_response_midi_note_off, pyin_pitch_track, onsets_noteoff, rel_freq, log_freq, note_precision, melody_dtw, mean_cents_deviation_from_nearest_stimuli_pitch, mean_cents_deviation_from_nearest_midi_pitch))
+
+# sort types out
+main <- main %>% 
+     mutate_at(c("opti3", 
+                 "ngrukkon", "harmcore", "rhythfuzz",
+                 "proportion_of_correct_note_events",
+                 "proportion_of_correct_note_events_octaves_allowed",
+                 "proportion_of_correct_note_events_controlled_by_stimuli_length_log_normal",
+                 "proportion_of_correct_note_events_octaves_allowed_controlled_by_stimuli_length_log_normal",
+                 "proportion_of_stimuli_notes_found",
+                 "proportion_of_stimuli_notes_found_octaves_allowed",
+                 "no_errors_octaves_allowed",
+                 "no_correct_octaves_allowed",
+                 "no_errors",
+                 "no_correct",
+                 "no_note_events", 
+                 "stimuli_length", 
+                 "i.entropy"), as.numeric) %>% dplyr::rowwise() %>% dplyr::mutate(
+  unique_melody_name = paste0(c(stimuli_name, melody_group), collapse = "_")
+) %>% dplyr::ungroup()
+
+
+get_mean_information_content <- function(seq) {
+  seq <- factor(seq)
+  mod <- ppm::new_ppm_simple(alphabet_size = 108)
+  res <- ppm::model_seq(mod, seq)
+  mean(res$information_content, na.rm = TRUE)
+}
+
+
+# compute relative increase in note events
+main <- main %>% 
+  arrange(p_id, unique_melody_name, attempt) %>% 
+  dplyr::group_by(p_id, unique_melody_name) %>% 
+  mutate(increase_no_note_events = c(no_note_events[1], diff(no_note_events))) %>%  
+  dplyr::ungroup()  %>% 
+  dplyr::rowwise() %>% 
+  dplyr::mutate(mean_information_content = get_mean_information_content(itembankr::str_mel_to_vector(stimuli_pitch))) %>% 
+  dplyr::ungroup()
+
+save(main, file = "dat/output_data/main_analysis_res_with_features.rda")
+
+
+```
+
+```{r}
+load(file = "dat/output_data/main_analysis_res_with_features.rda")
+```
+
+
+
+Most people would not be surprised to hear their friend sing a familiar melody to them, even if their friend were not a great singer or a professional musician. Indeed, remembering melodies is not just an explicitly taught skill useful to professional musicians [@lehmannPsychologyMusiciansUnderstanding2007], but an implicitly acquired ability which most of the general population engage in effortlessly [@bigandAreWeExperienced2006; @bigandMultidimensionalScalingEmotional2005; @ettlingerImplicitMemoryMusic2011; @mullensiefenRoleFeaturesContext2014; @schellenbergFinegrainedImplicitMemory2019; @tillmannImplicitLearningTonality2000]. Consequently, for most people in the general population, melodic memory encoding and retrieval processes are a normal part of life, even though for many such abilities are only implicitly acquired and exercised, rather than formally trained [@lehmannPsychologyMusiciansUnderstanding2007]. In some basic respect, remembering and recalling melodies could be viewed a general skill, not dependent on formal music training or expertise. 
+
+The purpose of this study is to model such melodic memory and recall processes in a quantitative way, and to understand how mental representations of melodies develop over short periods of time, after repeated exposure to the same melodic target stimulus. Specifically, we advocate the *melodic recall paradigm* [@slobodaImmediateRecallMelodies1985], and in doing so, like @okadaWhatMusicalAbility2021 recently argued, among others [@burenWhatMakesChild2021; @hallamMusicEducation21st2010], emphasise the importance of musical *production* tasks to gaining a comprehensive understanding of musical abilities. However, we take modelling of the melodic recall paradigm forward in two main respects. First, we reason for and employ similarity metrics to score melodic recall data, and argue that simple accuracy measures alone are not sufficient to understand melodic recall. Second, whilst @slobodaImmediateRecallMelodies1985 noted that participants gradually attempt to sing more notes across each consecutive attempt at recalling the same melody, they did not formally model such changes across attempts. We contend that not formally modelling the change in number of recalled notes per attempt is a fundamental omission in previous melodic recall studies [e.g., @ogawaModificationMusicalSchema1995; @slobodaImmediateRecallMelodies1985; @zielinskaMemorisingTwoMelodies1992]. In particular, we suggest that modelling the change in number of recalled notes per attempt, in parallel to the overall change in overall performance, offers at least three main advantages to melodic recall research. First, it points to the potential application of models and ideas from already well-established theories of produced mental representations in non-musical domains [e.g., serial recall; @andersonFranSimulationModel1972]. Second, it reminds us that there are general constraints on human memory [@christiansenNoworNeverBottleneckFundamental2016; @cowanMagicalMysteryFour2010; @millerMagicalNumberSeven1956; @oberauerWorkingMemoryCapacity2007], and that not all variance in melodic recall behaviour may be explained in musicological terms, which may suggest a weighting of explanatory focus from domain-specific to domain-general memory mechanisms. Lastly, it enables key insights into how the encoding of melodic information works, which may otherwise be lost in statistical inference that does not take into account domain-general memory faculties [see @silasAssociationsMusicTraining2022 for a related discussion]. 
+
+In summary, as this paper will show, concepts related to general working memory constraints (e.g., non-musical serial recall, item length) appear to be more important to explaining melodic recall than any other musicological considerations (e.g., interval representations, tonality) when the length of the melodies certainly requires multiple attempts to sing back all the notes (e.g., length 15-48), or at least with the data presented here. In other words: "melodic recall" appears to be closely related to "recall" in other memory domains.
+
+## Music and Working Memory
+
+The construct of working memory is now well-developed in psychology, with the most popular model being @baddeleyWorkingMemory1974's multi-component model, subsequently updated in @baddeleyEpisodicBufferNew2000. Working memory refers to the ability to transform and manipulate information in short-term memory. In general, it is thought to comprise components for manipulating phonic and visual stimuli separately. Music scholars have long recognised the important role of working memory in musical behaviours, particularly those involving aural skills [@chenetteWhatAreTruly2021; @corneliusInteractionRepetitionDifficulty2020; @gatesDevelopingMusicalImagery2021; @karpinskiAuralSkillsAcquisition2000]. Indeed, those with formal music training have widely been documented to have better working memory capacities [@talaminiMusiciansHaveBetter2017; @talaminiWorkingMemoryMusicians2016].
+
+It has been argued by some [e.g., @berzWorkingMemoryMusic1995a] that general working memory models do not explain working memory for musical stimuli well. Other authors such as @ericssonLongtermWorkingMemory1995 contend that the development of expertise, in specialised domains such as formal music training and chess, cultivates domain-specific forms of working memory, which they refer to as "long-term working memory", whereby (musical) abilities are subserved by relatively specialised systems, quite distinct from general working memory. In our own previous research, we have documented the possible scenarios which might explain the links between domain-general and domain-specific (music) working memory faculties: they may be relatively (statistically) disparate, but nonetheless, rely on each other, potentially bidirectionally [@silasAssociationsMusicTraining2022]. The implications of this are that, perhaps by definition, musical abilities are subserved by both domain-general (potentially to do more with inherited characteristics) and domain-specific (potentially more to do with training) faculties. In other words, someone with a very good general working memory might be able to demonstrate a similar level of (e.g., sung recall) performance to someone who has had more musical training. The former's general faculties may help them monitor their performance as well as someone who has carved out music-specific templates to aid the same task. The underlying processes may be different, but the observable phenotype similar. Framed in terms of our study: if music conforms to a style that people in the general population are familiar with, do musical features (often better remembered by expert musicians) tend to matter? With relatively simplistic, familiar musical styles, is performance really mediated by music-specific processes, or could it be more domain-general processes which turn out to be important? If melodies are long enough to require multiple attempts to sing in full, are musical features beyond length particularly important, compared to the length of a melody alone? Next, we discuss previous approaches to studying melodic memory.
+
+## Melodic Recognition Paradigm
+
+Traditionally, melodic memory has been investigated frequently using different variants of the *melodic recognition paradigm* [@idsonBidimensionalModelPitch1978]. In this paradigm, the listener hears a melody in a training phase and then a second melody in a test phase. The second can be identical, similar in some musical sense, or completely different from the first [e.g., @dowlingContourIntervalPitch1971]. The participants’ task is to tell whether the two melodies are identical or not. The rationale of this paradigm is that undetected differences between two melodies reflect differences in musical dimensions which are not retained in memory, or are forgotten easily. Differences that participants do detect are supposed to happen in a musical dimension which is represented in memory (for a good and compact description of the paradigm see e.g. @idsonBidimensionalModelPitch1978, p. 554). In many such studies, melodies used as stimuli were composed and/or manipulated by the experimenters to show the desired differences in the specific musical dimensions. Such studies show, for example, that, at least under certain conditions, contour representations of melodies are more easily retained in memory than interval representations [@dowlingScaleContourTwo1978; @dowlingTimeCourseRecognition1995; @edworthyIntervalContourMelody1985; @massaroRoleToneHeight1980], shorter sequences are recognized better than longer ones [@edworthyIntervalContourMelody1985; @longRelationshipsPitchMemory1977], and after short retention intervals, contour is retained better, but after long retention interval memory performance for tonality and intervallic information is superior [@dewittRecognitionNovelMelodies1986; @dowlingImportanceIntervalInformation1981; @dowlingTonalStrengthMelody1991].
+
+There are two main disadvantages of the melodic recognition paradigm for the study of melodic memory: Firstly, participant responses are limited to a binary decision (i.e. ‘identical’ vs ‘not identical’), possibly with a confidence judgement on an ordered scale. This has been criticized for discarding a lot of information that may be relevant in analyzing the actual memory representations, which are presumably much richer than such a binary decision can reflect. Secondly, the experimental melodies and their according variants are, in most cases, artificially constructed to fulfill the constraints of the experimental design. This often results in the usage of pitch sequences that are stylistically unfamiliar to participants and may be rarely encountered in actual human melodic processing. If realistic musical material is used, differences between the to-be-compared excerpts introduced by the experimenter can often appear obvious or artificial. Subtle differences and naturally occurring nuances between memory representation and the original may thus remain undiscovered [e.g., @kauffmanMemoryIntactMusic1989]. 
+
+Recent developments to the related experimental approach of melodic discrimination testing via explanatory item response theory [@harrisonApplyingModernPsychometric2017; @harrisonModellingMelodicDiscrimination2016] and usage of large-scale musical corpora [e.g., @bakerMeloSolCorpus2021; @pfleidererJazzomatNewPerspectives2017] have bolstered and improved some of these aspects of the melodic recognition paradigm. However, the so-called melodic *recall* paradigm, employed in this study, offers a different kind of insight into the different musical dimensions retained in memory.
+
+## Melodic Recall Paradigm
+
+There have been a few studies employing the melodic recall paradigm to investigate memory for melodies, with @slobodaImmediateRecallMelodies1985 probably being the most well-known. @slobodaImmediateRecallMelodies1985 played the 30-note instrumental melody of a folk song to participants and asked them to sing back whatever they remembered from the melody. As participants found it very difficult to sing back much of this relatively simple and comparatively short folk tune, they could play the melody up to six times, with a chance to sing back the melody again after each hearing. As a result, a sung recall for every trial attempt and every participant was obtained. With a manual but quasi-algorithmic analysis technique, Sloboda and Parker (1985) showed that the (phrase, metric, harmonic) structure of the heard melody was learned rather early in attempts while intervallic and rhythmic details stayed quite inaccurate until later attempts. We note the operalisation and assumption of this approach, which we follow here: improvements in sung recall are taken as evidence of learning a melody. In other words, to improve on singing back a melody, it is necessary that the melody has been remembered (i.e., learned) better on each consecutive attempt. We use the term "learning" throughout the manuscript, specifically referring to the task at hand, which is sung recall, as distinct from other tasks (e.g., aural dictation) but do not intend to suggest that the melody is necessarily learned beyond the task of singing.
+
+@slobodaImmediateRecallMelodies1985 observed that the sung recalls got considerably longer over the six repetitions, but the ratio between the number of correctly recalled notes and the overall number of sung notes stayed approximately constant. Among the 48 trials of the eight participants they tested, they observed not a single rendition without error. In their discussion, they concluded that, in accordance with the notion of generative grammars for melodies, melodic structure seems to be a feature that is preferably abstracted in memory, while details such as exact pitches and durations are rather improvised within the constraints of the melodic structure retained in memory. @slobodaImmediateRecallMelodies1985's results were partially reconfirmed by @mullensiefenSlobodaParkerRecall2011 who used @slobodaImmediateRecallMelodies1985's original transcribed recall data, but employed a computational approach to analysing it. Their algorithmic approach suggested some different interpretations of the data. For instance, @slobodaImmediateRecallMelodies1985 observed no increase in performance across attempts, which is surprising, because it suggests that melodic features are not incrementally extracted through repeated exposure. However, @mullensiefenSlobodaParkerRecall2011 presented evidence of learning: participants seem to be able to recall the melody better across repeated attempts, as indicated by increases in *similarity* (not accuracy) between the sung recall and the target melody. This suggests that accuracy alone may not be an appropriate measure of melodic recall performance.
+
+A few studies after @slobodaImmediateRecallMelodies1985 followed the same experimental approach of using a melodic recall paradigm, but  differed in their use of experimental materials [more melodies, tonal vs. modal melodies; @ouraMemoryMelodiesSubjects1988], participants [more participants, participants with and without absolute pitch or formal musical background; @ogawaModificationMusicalSchema1995; @zielinskaMemorisingTwoMelodies1992], and number of trials per participant and melody (up to 10). The error rates over trials that @zielinskaMemorisingTwoMelodies1992 obtained suggest that participants can reach a level of almost error-free recalls if they are given enough trials, and that there is a particular point where the relative errors in the sung recalls start to diminish more noticeably. The position of this point seems to depend primarily on the amount of musical training of the participants. With music students possessing absolute pitch, the point is already at the second trial, whereas music students without absolute pitch need four repetitions before overall error rates decrease. The fact that there is a particular point where participants' error rates significantly start decreasing does not necessarily speak against Sloboda's and Parker’s claim that melodic structure is acquired first. @zielinskaMemorisingTwoMelodies1992, as well as @ouraMemoryMelodiesSubjects1988, also discovered that their participants first memorised the structure by segmenting the melodic stream into ordered phrases and improvising on details. This was especially true for the formally trained participants, while music novices tended to commit rather 'unmusical' errors, such as modulations to different tonalities or errors on phrase contours, as @ouraMemoryMelodiesSubjects1988 note. For a more thorough review of general memory paradigms and their adaptation for melodic memory research, we refer the reader to @mullensiefenSlobodaParkerRecall2011.
+
+# Methodological Issues with Melodic Recall Research
+
+Despite the possibility of giving interesting insights into the mechanisms of memory for melodies, the melodic recall paradigm as applied by the cited studies has some inherent problems. Firstly, previous cited studies using the melodic recall paradigm relied on a hand-made comparison analysis between target melody and sung recalls. Consequently, the number of recalls to be analysed was limited. For example, Sloboda and Parker (1985) analysed 48 renditions from their participants, while Oura and Hatano had 320, and Zielnska and Miklaszewski (1992) 310 renditions to base their analyses on. For going beyond this level of analysis, the computer suggests itself as an aid (i.e., algorithmic analysis). The computer-based analysis used in the present study allows us to cope with around 2,250 sung recalls. In turn, this higher number of melodic objects allows the deployment of techniques from statistical modeling, which require many data points to be used effectively. Secondly, previous methods to assess the quality of a sung recall involved accuracy-based measures, which alone are inadequate for meaningfully assessing melodic recall behaviour, as we will demonstrate. Third, whilst Sloboda and Parker (1985) noted that sung recalls got longer (though not necessarily better) over subsequent trials, they did not model this effect. This methodological omission leads to a theoretical one: it neglects to observe the domain-general aspects of sung recall, which do not differ from normal recall.
+
+
+## The Present Study: Methodological Advances for Melodic Recall Research
+
+To meet these shortcomings of previous melodic recall research, we make a number of methodological advances. These are to: i) employ an algorithmic analysis of melodic recall data; ii) employ similarity metrics over (but including) accuracy measures to score such data; and iii) to model the change in number of recalled notes across attempts in addition to changes in melodic similarity, which allows comparisons to general memory faculties.
+
+To that end, we conduct two experiments. Experiment 1 is a simulation study where we describe and compare accuracy and similarity-based measures. Formally, we show how accuracy and similarity measures diverge for different simulated conditions. This highlights the different properties of similarity-based measures and suggests their superiority over accuracy measures for melodic recall data. In Experiment 2, we present an experiment using melodic recall data collected from human participants. Here, we focus on another important point that has been overlooked in melodic recall research: the lack of a statistical model to support how the number of recalled notes changes across consecutive attempts and how this changes alongside overall performance, as measured by melodic similarity.
+
+\newpage 
+
+
+# Experiment 1: A comparison of accuracy vs. similarity measures applied to melodic recall data
+
+
+```{r child = "Experiment_1.Rmd"}
+
+```
+
+
+\newpage 
+
+# Experiment 2: How do we learn melodies? A melodic similarity-based perspective.
+
+
+```{r child = "Experiment_2.Rmd"}
+
+```
+
+
+## Summary and Conclusions
+
+Consequently, melodic representations build up over multiple hearings (and sung recalls). On each attempt, the main constraint appears to be the working memory load [@baddeleyEpisodicBufferNew2000; @baddeleyWorkingMemory1974], limited to a certain number of notes that can be recalled. Melodies with less complex features may potentially help the number of notes that can be recalled, but the main feature that determines recall is the length of the melody to be recalled, should it require multiple attempts to sing all the notes back. On each attempt, more notes will be recalled, and the number of recalled notes will approach the number of notes in the target melody [similar to models of non-musical serial recall; @andersonFranSimulationModel1972], or a long-term memory constraint dependent on the timespan of learning. But, so long as the error rate remains stable, and the number of recalled notes does not exceed those in the target melody, the overall similarity to the target melody will increase across attempts. Formal musical experience and training should aid memory and to help learn melodies quickly, presumably because of mental templates which help structure the melody and more efficiently integrate it into memory [@chenetteWhatAreTruly2021]. This may be similar to the notion of *long-term working memory* [@ericssonLongtermWorkingMemory1995]. However, such musical expert memory may not be necessary, but rather, sufficient: a very good general memory and little formal musical experience may help in any case. After all, perhaps singing back pop melodies is more like a general ability and essential part of human life, rather than a formally trained musical activity.
+
+## Limitations
+
+We suggested that number of recalled notes could be a driver of *opti3* scores. However, we note this is a logical assumption, but not fully deductive. In other words, our data cannot fully prove the causal chain that increase in number of recalled notes across attempts are causally responsible for improvement in *opti3* across attempts. For instance, it could be that *opti3* increases across attempt alongside *number of recalled notes* simply in an associational manner, whereby *opti3* increases despite the associated increases in *number of recalled notes*. However, beyond the strong associational pattern, there are strong logical and inductive grounds for supposing the causality. Most importantly, the *opti3* measure of similarity is dependent on the length of the melodies to be compared in only a soft sense, which invokes a causal mechanism. However, this does not imply that all the variance explained in *opti3* is attributable to *number of recalled notes*. Hence, we highlight to the reader that we are arguing for the plausibility of causality, rather than inferring one.
+
+That fact that we did not counterbalance the order of MIDI/audio (i.e., all participants heard MIDI excerpts then audio excerpts) could potentially be a confounding factor and contributed to more notes being recalled in the audio condition. Perhaps people became more confident or simply better at singing back across the course of experiment. However, we suspect this might have been a small effect compared to the advantage of having lyrics as well as expressive cues and musical information form the backing track that helped participants to remember more notes form the full audio.
+
+
+# Future Directions
+
+Our study suggests several future directions for research with the melodic recall paradigm. First, we suggest that number of recalled notes and *opti3* should be even more integratively modelled, using a  much larger database of items and more heterogeneity in melodic features. We have recently implemented such a framework [@silasSingingAbilityAssessment2023]. Second, a general working memory construct (measured by one or more variables) should be included as a predictor, as this may have some explanatory power aside from musical memory faculties [see @silasAssociationsMusicTraining2022 for a discussion of these issues]. Third, new research suggests other melodic features, such as symmetry, may be interesting to explore as melodic feature predictors [@clementeSet200Musical2020; @herbornFeaturesPerceptionConstruction2022]. Fourth, as we have argued elsewhere [@silasSingingAbilityAssessment2023] singing accuracy and melodic recall measures should be simultaneously measured to understand and represent both domains properly. Lastly, since effects around item length are modelled and described well in the *ACT-R* framework, which has several models of serial recall [e.g., @andersonFranSimulationModel1972] relevant to the number of recalled notes and emphasises modelling produced events, we intend to more thoroughly explore modelling that integrates the *ACT-R* framework  [@ritterACTRCognitiveArchitecture2019] alongside melodic feature modelling. We note that integrations of musicological considerations with *ACT-R* seem to be scarce  [@chikhaouiLearningSongACTR2009; @reiter-haasPredictingMusicRelistening2021], yet such a production-driven modelling framework seems highly relevant to musical phenomena [@okadaWhatMusicalAbility2021].
+
+
+
+\newpage
+
+# References
+
+::: {#refs custom-style="Bibliography"}
+:::
+
+
+\newpage
+
+# (APPENDIX) Appendices {-}
+
+```{r child = "appendix.Rmd"}
+```
+

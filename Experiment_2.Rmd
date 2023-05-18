@@ -1,0 +1,1157 @@
+
+
+```{r}
+
+plot_descriptive_vs_predicted <- function(model, pretty_var_name, var_name) {
+  
+  var_name <- as.name(var_name)
+
+  prds <- tibble(pred = predict(model), attempt = main2$attempt)
+  
+  prds <- prds %>%
+    dplyr::group_by(attempt) %>%
+    dplyr::summarise(pred = mean(pred, na.rm = TRUE)) %>%
+    ungroup()
+
+
+  mean_by_attempt <- main2 %>%
+    dplyr::group_by(attempt) %>%
+    dplyr::summarise(
+      !!var_name := mean(!!var_name, na.rm = TRUE)
+      ) %>%
+    ungroup()
+
+  attempt_pred_vs_descript <- cbind(mean_by_attempt,
+                                    prds %>% dplyr::select(-attempt)) %>%
+      dplyr::rename(Attempt = attempt,
+                  `Predicted Model Values` = pred,
+                  `Empirical Descriptive Values` = !! var_name) %>%
+    pivot_longer(`Empirical Descriptive Values`:`Predicted Model Values`, names_to = "Name", values_to = pretty_var_name)
+
+  ggplot(attempt_pred_vs_descript, aes(x = Attempt, y = !! as.name(pretty_var_name), group = Name, color = Name, linetype = Name)) +
+    geom_point() +
+    geom_line() +
+    theme(legend.title=element_blank())
+
+}
+
+
+get_r2m <- function(mod) {
+  as.numeric(round(MuMIn::r.squaredGLMM(mod)[,"R2m"], 2))
+}
+
+get_r2c <- function(mod) {
+  as.numeric(round(MuMIn::r.squaredGLMM(mod)[,"R2c"], 2))
+}
+
+
+```
+
+
+The aim of Experiment 2 is to employ the recall paradigm in an experiment with real participants, much the way that aforementioned studies [e.g., @ogawaModificationMusicalSchema1995; @slobodaImmediateRecallMelodies1985] have used it. However, this study takes steps ahead in comparison with previous studies using the melodic recall paradigm in at least five basic aspects: (i) The number of different melodies presented: 14, still not large, but substantially larger to previous research which used 1-2 melodies as targets; (ii) The overall number of overall sung recalls to be analysed (around 2,250); (iii) The usage of unambiguously defined and thoroughly tested algorithms of melodic similarity for various musical dimensions; (iv) The modeling of participant responses in statistical models that allows an interpretation of memory mechanisms that involve music-structural variables as well as variables concerning the experimental design and participants’ musical background. To this end, we utilise mixed-effect modelling to simultaneously account for the fixed effects of melodic features in explaining participant performance, whilst also considering participant and item-level random effects, which should ensure that potentially misleading and spurious effects are accounted for; (v) we formally model change in number of recalled notes in each attempt. This latter point is based on the observation that @slobodaImmediateRecallMelodies1985 made, that across each attempt at singing back the same melody, participants tend to contribute more notes. However, they did not model this effect, which is an omission in the previous literature.
+
+## Operationalising Similarity vs. Number of Recalled Notes
+
+Alongside the similarity measures described in Experiment 1, Experiment 2 introduces the formal modelling of the dependent variable *number of recalled notes*. This represents the number of notes that a participant sings in a trial attempt. Note that this was manipulated in those conditions in Experiment 1 which affected the sung recall length: Exp. 1B (insertions); Exp. 1C (deletions); Exp. 1G (length mismatch). Overall, sung recall length was associated with higher scores across all similarity and accuracy measures. We only simulated changes in length that were less or equal to the length of the target melody. Hence, the result is intuitive: if you do not sing all notes in a melody, it cannot be fully correct; all notes must be present to have sung the melody perfectly. Note, however, the *accuracy* measure could still reach a perfect score of 1, despite singing fewer notes than in the target melody, so long as all the sung notes were in the stimulus. 
+
+As observed by @slobodaImmediateRecallMelodies1985, participants may take several attempts at the same melody before they manage to sing all the notes back: they consecutively build up, adding new notes to each attempt. This suggests that the sheer number of notes recalled in an attempt could be a main driver of overall similarity (numbered of recalled notes => overall similarity). However, as illustrated previously, it is not enough to simply recall the correct number of notes to obtain high melodic similarity: these notes must respect the melodic identity too (i.e., they are necessary, but not sufficient). Hence, *number of recalled notes* is *not* intended to be a measure of overall performance, but simply a count of the number of notes in each attempt, which is related to overall performance. Overall performance is measured by *opti3*, our melodic similarity variable. In Experiment 2, we model changes in numbered of recalled notes alongside changes in overall melodic similarity.
+
+
+# Research Questions
+
+
+We seek to answer three general questions. First, what makes melodies more easy or difficult to remember? To answer this question, we aim to construct statistical models of melody learning consider i) relevant experimental conditions (e.g., whether the melody was presented as part of a full audio recording or as melody-only *MIDI* version), (ii) features of melodic structure (e.g., melody length, tonality), and (iii) individual differences (e.g., musical background). Second, we seek to investigate the temporal aspects of learning and thus answer the question, "how do we learn melodies"? This concerns the time course of learning over multiple attempts and identifying the different aspects of learning (e.g., the types of errors made) that change across multiple trial attempts for the same melody. Moreover, focusing on temporal aspects allows us to investigate how the representations of melodies build up in memory and hence predict the type of mistakes that people make early and late in the learning process, and whether the type of mistake differs by level of prior musical experience. Finally, we ask "how do the number of recalled notes submitted change across attempt and relate to musical features, individual differences and changes in overall similarity"?
+
+
+# Method
+
+Experiment 2 uses the experimental design employed by Sloboda and Parker (1985), and subsequently used by others [e.g., @ogawaModificationMusicalSchema1995 and @ouraMemoryMelodiesSubjects1988] in different variants.
+
+```{r}
+
+# grab and sort demographic stuff
+demographics <- read.csv('dat/aux/subjects_data.csv') %>% 
+  dplyr::mutate(p_id = paste0("VP", subjnr),
+         Group = case_when(Group == 1 ~ "A", 
+                           Group == 2 ~ "B"))  %>% 
+  dplyr::mutate(across(monthsinginstr:gigs, replace_na, 0))
+          
+demographics_vars <- demographics %>% dplyr::select(-c(Group, subjnr, p_id))
+
+main <- main %>% left_join(demographics, by = "p_id")
+
+```
+
+```{r}
+
+min_age <- min(demographics$age, na.rm = TRUE)
+max_age <- max(demographics$age, na.rm = TRUE)
+avg_age <- mean(demographics$age, na.rm = TRUE) %>% round(2)
+sd_age <- sd(demographics$age, na.rm = TRUE) %>% round(2)
+no_female <- sum(demographics$sex==1)
+percent_female <- (no_female/length(demographics$sex) * 100) %>% round(2)
+
+min_inst <- min(demographics$yearsins)
+max_inst <- max(demographics$yearsins)
+avg_inst <- mean(demographics$yearsins)
+sd_inst <- sd(demographics$yearsins)
+
+  
+```
+
+## Participants
+
+31 adult participants (`r percent_female`% female) aged `r min_age`-`r max_age` (*M* = `r avg_age`; *SD* = `r sd_age`) from undergraduate courses in psychology and musicology at the University of Hamburg, Germany, were recruited. Participants' musical backgrounds (`r min_inst`-`r max_inst` years of instrumental training; *M* = `r avg_inst`; *SD* = `r sd_inst`) were assessed by a detailed questionnaire asking for their present and past musical activities. To be able to focus on memory and not singing errors in our analysis, participants underwent a screening phase. Participants were asked to sing three popular melodies (e.g., Happy Birthday, German national anthem etc.) of their choice that they believed they could sing error-free. Before entering the transcription and analysis of the test items, participants were selected on the basis of their rendition of these songs: Their intonation and rhythmic stability were judged by a professional singer and choir director with a longtime experience of working with lay singers. The main criteria that the choir director attended to was stable intonation and timing, as well as the ability to produce clear notes. The summary criterion was "would this person be able to join your choir?", with the choir being an amateur level choir with singers not having received any formal singing instruction during their lifetime, and the choir only rehearsing once a week and singing 1-2 concerts per year with easy repertoire. No other technical tools were used for assessment. 23 participants that showed a largely stable intonation and sense of timing were selected on these grounds.
+
+
+```{r}
+
+mode_count <- melodies_with_features %>% dplyr::count(mode)
+major_count <- mode_count %>% filter(mode == "major") %>% pull(n)
+minor_count <- mode_count %>% filter(mode == "minor") %>% pull(n)
+
+
+```
+
+# Materials
+
+The stimuli used are the same as presented in Experiment 1 (see Appendix C for a list of the test songs, as well an example from each song as musical notation, distribution of features etc.). We additionally describe some relevant features here, particularly those which are relevant to a real human participants' ability to learn them. Melodies were between 9 and 21 seconds long (length = 15-48 notes). This extends beyond usual working memory limits and is also longer than what non-experts are usually able to recall with a high degree of accuracy on their first attempt, according to the literature [@ouraMemoryMelodiesSubjects1988; @zielinskaMemorisingTwoMelodies1992]. `r major_count` melodies were classified as major and `r minor_count` as minor by the @krumhanslCognitiveFoundationsMusical1990 algorithm.
+
+
+All songs had a hit-like quality and an easily singable vocal melody, despite not being or having been overly popular in Germany. Participants were always asked whether they knew the songs and none indicated that they did. Hence, the melodies were unknown to them. The songs were sampled from different popular music styles as light pop, dance, ballad, rock, blues rock. Among the interpreting artists were Neil Sedaka, Dan Fogelberg, Richard Marx, Modern Talking and Paul Anka. Because all melodies came from popular western music form the last 60 years, they were all structured in phrases which can potentially be used for memory chunking. The stimulus melodies were often one stanza (line) from a verse or chorus of a pop song and contained several melodic phrases, often separated by longer notes or short rests. Hence, the full verse or chorus melody of the song would be longer than the excerpts used as stimulus. All melodies were taken from vocal passages. Note, that vocal melodies are thought to be easier to learn than instrumental passages due to the mimetic hypothesis [@coxMimeticHypothesisEmbodied2001]. The singability of the melodies were piloted informally, but no melodies were discarded. 
+
+All songs were used as song excerpts from the original audio recording (audio melodies) and as single-line melody that was transcribed from the original recording and rendered in a MIDI Grand Piano sound. Melodies were transcribed from their tracks by a high-quality professional transcription service^[Notenservice Riggenbach. URL: https://www.notenservice.com/]. The transcriber's brief was to transcribe the melodies as accurately as possible and notational choices were made to express what they heard as the intended structure. Because metrical information is not considered in any of the similarity measures, the notational choice of e.g., 9/8 vs. another 4/4 measure does not affect the results. Similarly, none of the similarity measures take absolute tempo or meter into account and therefore transcriptions at half time or double time would not affect similarity measurements.
+
+The melodies were divided by random into two groups, A and B. To prevent serial effects and an uncontrolled interaction between version and melody, half of the participants listened to melodies from group A in the MIDI rendition and to the audio melodies from group B. The other half of the participants had group B melodies as MIDI and group A melodies as audio. 
+
+
+## Procedure
+
+After having sung the three popular songs, participants were told that they would listen to short melodies which they had to sing back from memory immediately afterwards. They had the chance to listen to every melody up to six times and to sing them back every time again. After each sung recall, they were asked to rate their own performance on a 7-point scale for accuracy in comparison with the original, while disregarding minor intonation or other singing problems. They were asked to repeat listening and singing back each melody until the sung recall was perfect in their opinion. In doing so, participants that reached perfect recalls quickly were not forced to repeat them identically, which kept motivation high across trials. These data were not kept for analysis.
+
+The specific instructions for the task were: "In the following you are going to hear a short melody that you should sing back immediately. Your recall (singing) is going to be recorded. Please also indicate afterwards on a scale from 1 to 7 how certain you are that the sung melody is identical to the original melody. 1 represents “very certain different” and 7 represents "very certain identical". Please indicate also how well you knew the melody prior to this study and tell title and performer if possible". Consequently, participants did not have to start the melody from the beginning.
+
+Participants were first trained with two melodies, where each could be repeated up to six times. After the training phase, participants were tested with seven single-line *MIDI* melodies in the first test block. Subsequently, they were played a real song excerpt (audio melody) for training, which was followed by a test block of seven audio melodies. Having concluded the second test session, participants filled out the questionnaire on their musical background and were then debriefed. Participants were tested individually, listening to the melodies on a pair of *Beyerdynamic DTX800* headphones. Their sung recalls were recorded directly to hard disk using a *Philips MD 650* microphone and *Cool Edit Pro 1.2* as recording software device. The entire experimental session lasted about 75 minutes.  
+
+
+
+## Audio Transcription
+
+As a result of the test sessions, approximately 2,250 audio files were obtained. For computational analyses, such audio must be transcribed to a symbolic format such as MIDI. We used the same high-quality commercial service described in Experiment 1 for the transcription of the sung recalls. To avoid any bias in the transcription process, the human transcribers were not informed about the aims and the details of the study, but a set of guidelines was provided to help with ambiguous cases (e.g., pitch bend, non-pitched sounds, rhythmic precision, and implied metrical structure). The original melodies were transcribed according to the same guidelines by the same person. However, they were not given any information about the original melodies at the time of transcribing the sung recalls in order not to introduce any bias towards the target. 
+
+## Data Transformation
+
+After transcription, the MIDI files were converted to a tabular text format using the conversion tool *MELCONV* [@frielerComputationalMelodyAnalysis2018] which builds on the freely available MIDIJDK library. After conversion, pitches were represented as MIDI numbers and onset times and durations were represented in MIDI beats and ticks as well as milliseconds. Time signature information was also read out from the MIDI files for later use.
+
+
+# Data Analysis
+
+
+```{r echo = FALSE, warning=FALSE}
+
+# attempt a FA on relevant vars
+# 
+# d, hobbymus
+# d, musicmag
+# d, chorusin
+# d, singinstr
+# d, instrume
+# 
+# c, hrsmusda
+# c, cdsbuy
+# c, cdsburn
+# c, concerts
+# c, singalon
+# c, monthsinginstr
+# c, yearsins
+# c, practmom
+# c, musmakmo
+# c, practpas
+# c, musmakpa
+# c, paidless
+# c, paidgigs
+# c, gigs
+
+demographics_vars_for_fa <- demographics_vars %>% dplyr::select(-c(age, edulevel, sex))
+
+# proportion missing
+# prop_miss(demographics_vars_for_fa)
+
+dem <- mixedCor(demographics_vars_for_fa, 
+                c = c("hrsmusda", "cdsbuy", 
+                "cdsburn", "concerts", "singalon", "monthsinginstr", "yearsins", "practmom", "musmakmo",
+                "practpas", "musmakpa", "paidless", "paidgigs", "gigs"),
+                d = c("hobbymus", "musicmag", "chorusin", "singinstr", "instrume"), 
+                use = "pairwise.complete.obs")
+
+
+dem_cors <- dem$rho
+
+# singinstr and monthsinginstr completely collinear
+
+```
+
+```{r warning = FALSE, include = FALSE}
+demographics_vars_for_fa2 <- demographics_vars_for_fa %>% dplyr::select(-hobbymus)
+
+dem2 <- mixedCor(demographics_vars_for_fa, 
+                c = c("hrsmusda", "cdsbuy", 
+                "cdsburn", "concerts", "singalon", "monthsinginstr", "yearsins", "practmom", "musmakmo", "practpas", "musmakpa", "paidless", "paidgigs", "gigs"),
+                d = c("musicmag", "chorusin", "singinstr", "instrume"), 
+                use = "pairwise.complete.obs")
+
+
+dem_cors2 <- dem2$rho
+
+psych::KMO(dem_cors2)
+          
+# NaNs in KMO matrix.. perhaps because of mixed data?
+
+```
+
+
+```{r include = FALSE}
+fa.parallel(dem_cors2, n.obs = 31)
+```
+
+```{r include = FALSE}
+
+# after discussion and attempting a 3 component solution, we decided to extract one factor (e.g., musical experience) because 3-factor solution is not easy to interpret/lots of cross loadings/high correlations between factors
+
+dem_pca <- principal(dem_cors2, n.obs = 31, nfactors = 1, cor = "mixed", use = "pairwise.complete.obs", scores = TRUE)
+dem_pca
+print.psych(dem_pca, cut = 0.3, sort = TRUE)
+```
+
+```{r include = FALSE}
+
+# remove vars with low h2/loadings
+demographics_vars_for_fa3 <- demographics_vars_for_fa2 %>% 
+  dplyr::select(-c(musmakmo, practmom, cdsbuy, musicmag, hrsmusda, cdsburn, concerts, singalon, practpas, instrume, monthsinginstr))
+
+dem3 <- mixedCor(demographics_vars_for_fa3, 
+                c = c("yearsins", "musmakpa", "paidless", "paidgigs", "gigs"),
+                d = c("chorusin", "singinstr"),
+                use = "pairwise.complete.obs")
+
+
+dem_cors3 <- dem3$rho
+
+```
+
+
+```{r include = FALSE}
+# same issue
+KMO(dem_cors3)
+```
+
+
+
+```{r include = FALSE}
+dem_pca3 <- principal(dem_cors3, n.obs = 31, nfactors = 1, cor = "mixed", use = "pairwise.complete.obs")
+dem_pca3
+#print.psych(dem_pca2, cut = 0.3, sort = TRUE)
+summary(dem_pca3)
+```
+
+
+```{r include = FALSE}
+# extract scores
+pca_scores <- predict(dem_pca3, data = demographics_vars_for_fa3)
+pca_scores
+
+# crazy high?
+```
+
+
+```{r include = FALSE}
+# try lavaan approach for mixed data
+
+demographics_vars_for_fa3_scaled <- demographics_vars_for_fa3 %>% mutate_all(~(scale(.) %>% as.vector))
+
+m1 <- paste("f1 =~ ",paste(names(demographics_vars_for_fa3_scaled),collapse = "+"))
+
+fit1 <- cfa(m1, data = demographics_vars_for_fa3_scaled, missing = "ML")
+
+fscores <- as.vector(lavPredict(fit1))
+
+demographics_vars_for_fa3_scaled$fscores <- fscores
+
+dem_mod_summary <- summary(fit1)
+
+summary(fit1, rsq = TRUE)
+
+fitRsquares <- lavInspect(fit1, what='rsquare')
+summary(fitRsquares)
+
+# this looks good
+```
+
+
+```{r include = FALSE}
+
+# merge demographic variables with the main dataset:
+
+demographics$musical_experience <- fscores
+demographics_sub <- demographics %>% dplyr::select(musical_experience, age, edulevel, sex, p_id)
+main <- main %>% left_join(demographics_sub, by = "p_id")
+
+```
+
+```{r include = FALSE}
+
+demographics %>% ggplot(aes(x = musical_experience)) +
+  geom_histogram(bins = 10)
+
+write_csv(demographics, file = 'dat/output_data/demographics_out.csv')
+
+```
+
+
+
+
+```{r include = FALSE}
+
+main <- main %>% dplyr::rename(no_recalled_notes = no_note_events)
+
+# look at DVS
+dvs <- main %>% 
+  dplyr::select(opti3, ngrukkon, harmcore, rhythfuzz,
+                proportion_of_correct_note_events, proportion_of_correct_note_events_octaves_allowed, proportion_of_correct_note_events_controlled_by_stimuli_length_log_normal, proportion_of_stimuli_notes_found, proportion_of_stimuli_notes_found_octaves_allowed, no_errors_octaves_allowed, no_correct_octaves_allowed, no_errors, no_correct, no_recalled_notes)
+
+dvs2 <- dvs %>% dplyr::select(-c(ngrukkon, harmcore, rhythfuzz))
+
+```
+
+```{r include = FALSE}
+fa.parallel(dvs2)
+```
+
+```{r include = FALSE}
+dvs2_not_opti <- dvs2 %>% dplyr::select(-opti3) # high u2
+fa_dvs <- dvs2_not_opti %>% pca(nfactors = 1)
+print.psych(fa_dvs, cut = .3)
+
+# abandon DV PCA for now
+```
+
+## Dimension reduction of demographic variables
+
+The questionnaire (see Appendix D1) about musical experience produced a set of mixed type (i.e., continuous, dichotomous, and polytomous) variables. To aggregate the data, we computed a pairwise correlation matrix using the `mixedCor` function from the *R* package *psych* (v 2.2.5) using pairwise complete observations to handle missing data (0.007% missing) and otherwise default settings. This correlation matrix was then used as the basis for factor analysis. A single-factor solution (see Appendix D2) was achieved using the `cfa` function from the *R* package `lavaan`, version *0.6-9* [@rosseelLavaanPackageStructural2012a]. We extracted scores using the regression method and took this variable to represent "musical experience". The variables *age*, *sex* and *edulevel* (level of education achieved) from the questionnaire were also used as single indicator variables in the subsequent analyses.
+
+## Main analyses
+
+### Assessment of change in number of recalled notes and similarity scores across repeated attempts
+
+To begin our analyses, we inspected our descriptive empirical results. First, we assessed the mean change in number of recalled notes across successive attempts. Next, we we assessed the mean change in similarity scores (*opti3*) across attempt, as well as for the mean change in each of the individual constituent similarity measures  (*ngrukkon*, *rhythfuzz*, *harmcore*; see Appendix A) across attempt.
+
+
+
+```{r include = FALSE}
+
+main2 <- main %>% 
+  dplyr::mutate(no_recalled_notes = as.numeric(no_recalled_notes), 
+         opti3 = as.numeric(opti3),
+         attempt = as.numeric(attempt)) %>% 
+  dplyr::select(opti3, no_recalled_notes, unique_melody_name, p_id, condition, attempt, musical_experience,
+               N, tonalness, i.entropy, step.cont.loc.var, d.entropy, mean_information_content) %>% na.omit
+
+```
+
+```{r include = FALSE}
+
+cor(main2$opti3, main2$no_recalled_notes) %>% round(2)
+
+pp <- main2 %>% 
+  dplyr::select(opti3, no_recalled_notes, N) %>% 
+  ppcor::pcor()
+
+round(pp$estimate, 2)
+
+round(pp$p.value, 2)
+
+
+```
+
+### Correspondence between number of recalled notes and melodic similarity (opti3)
+
+Then changes in the number of recalled notes and in melodic similarity (*opti3*) across attempt were plotted alongside each other on the same graph for comparison. For formal modelling of both number of recalled notes and *opti3*, we proceeded in a mixed effects framework. We constructed two separate models with a) *number of recalled notes* or b) *opti3* as dependent variables. Consequently, the two models assessed the development of a) the number of recalled notes (i.e. sung) across repeated attempts and b) overall improvement in performance, as indicated by melodic similarity. In our mixed effects models, participant and melody item were always included as random effects intercepts. Number of attempts and condition (*MIDI* vs. audio) were always included as fixed effects. 
+
+### Melodic feature modelling
+
+Subsequently, we evaluated a second set of models which additionally included melodic features as predictors. The melodic feature predictors employed were taken from the *FANTASTIC* toolbox [@mullensiefenFANTASTICFeatureANalysis2009] and are presented in Appendix E. *A priori* we chose *i.entropy* (to indicate the amount of "surprise" in intervallic information), *d.entropy* (to indicate the amount of "surprise" in rhythmic information), *tonalness* (to indicate the level of tonality), *N* (target melody length to indicate overall constraint on working memory) and *step.cont.loc.var* (to indicate the amount of variation in contour) due to previous research indicating that they serve as good predictors of melodic memory, at least in studies using a melodic recognition task [@mullensiefenRoleFeaturesContext2014;@dreyfusRecognitionLeitmotivesRichard2016;@harrisonApplyingModernPsychometric2017; @silasSingingAbilityAssessment2023]. Additionally, to capture the re-occurrence of melodic patterns and the overall self-similarity of each melody [@deutschProcessingStructuredUnstructured1980], we compute the mean information content of each sequence of melodic pitches using the *ppm* *R* package [@harrisonPPMDecayComputationalModel2020]. After iteratively eliminating predictors with a non-significant main effect contribution, we tested the interaction between significant feature predictors and attempt. Our feature-based modelling approach is closely related to @bakerModelingMelodicDictation2019's modelling of melodic encoding and recall processes used in melodic dictation among musicians who also makes use of features computed from the *FANTASTIC* [@mullensiefenFANTASTICFeatureANalysis2009] toolbox.
+
+
+### Individual differences modelling
+
+
+```{r}
+
+mus_exp_median <- median(main$musical_experience)
+
+main <- main %>% 
+  mutate(
+  musician = as.factor(case_when(musical_experience <= mus_exp_median ~ "Lower Musical Experience", TRUE ~ "Higher Musical Experience"))
+)
+
+main2 <- main2 %>% 
+  mutate(
+  musician = as.factor(case_when(musical_experience <= mus_exp_median ~ "Lower Musical Experience", TRUE ~ "Higher Musical Experience"))
+)
+
+by_attempt_non <- main %>% 
+  dplyr::select(attempt, no_recalled_notes, ngrukkon, harmcore, rhythfuzz, musician)  %>% 
+  dplyr::rename(`number of recalled notes` = no_recalled_notes) %>% 
+  tidyr::pivot_longer(cols = "number of recalled notes") %>% 
+  dplyr::rename(measure = name) %>% 
+  data_summary(varname = "value", groupnames = c("measure", "attempt", "musician")) 
+
+
+```
+
+```{r}
+
+mus_exp_counts <- main %>% dplyr::select(p_id, musician) %>% unique() %>% dplyr::count(musician)
+
+low_mus_exp_count <- mus_exp_counts %>% filter(musician == "Lower Musical Experience") %>% pull(n)
+
+high_mus_exp_count <- mus_exp_counts %>% filter(musician == "Higher Musical Experience") %>% pull(n)
+
+
+```
+
+Since Sloboda and Parker (1985) dichotomised their participants into "non-musicians" and "musicians", as a means of comparison with their data, we produced some figures as change in dependent variables across attempt but stratified into two groups: high musical experience and low musical experience. These groups were derived by taking the median value of musical experience variable and grouping into two bins based on this. Those with a musical experience value below or equal to the median were classified as being in the lower musical experience group, whereas the rest, the higher musical experience group. There were `r low_mus_exp_count` participants in the former and `r high_mus_exp_count` in the latter.
+
+Subsequently, we extracted the random effects intercepts for each participant from each of the two (number of recalled notes vs. overall similarity) models. We took these values to represent a participant-level latent score reflecting a) the number of recalled notes they can hold in memory b) their overall melodic recall ability. To evaluate whether musical experience is a good predictor of individual differences in both number of recalled notes and overall melodic recall performance, we regressed these participant intercepts onto the participant musical experience score derived earlier. The incremental modelling approach described in the above steps broadly follow the suggestions of @longLongitudinalDataAnalysis2011.
+
+
+### Mediation analysis
+
+As a means of formally associating number of recalled notes and *opti3* with one another, as well as to connect melodic features to *opti3*, we computed a mediation analysis whereby melodic features acted as predictors, number of recalled notes acted as mediator, and *opti3* as dependent variable. 
+
+
+### Correspondence between number of recalled notes and melodic similarity (opti3): revisited
+
+Lastly, we revisit the association between number of recalled notes and melodic similarity but using accuracy-style measures. Specifically, we view and model the number of recalled notes as a changing proportion of correct and incorrect notes across attempts. 
+
+
+```{r}
+
+avg_mel_length <- mean(melodies_with_features$N)
+
+```
+
+# Results
+
+## Assessment of change in number of recalled notes across attempt
+
+To visualise the change in number of recalled notes submitted across trials, Figure 3 graphs the mean number of recalled notes, as a function of attempt. As shown, the number of recalled notes increases across successive attempts. The effect is clearly non-linear, with a diminishing gain in number of recalled notes per attempt. Note that the average melody length is *N* = `r round(avg_mel_length, 2)`. Consequently, even after six attempts, on average, participants are still not submitting close to the number of notes in a target melody.^[As shown in Appendix F1, however, some participants are closer to approaching the average number of notes in the target melodies by the sixth trial  (e.g., *VP24*).]
+
+
+
+```{r}
+
+main2 %>% 
+  dplyr::rename(Attempt = attempt) %>% 
+  data_summary(varname = "no_recalled_notes", groupnames = "Attempt") %>% 
+  dplyr::rename(`Mean number of recalled notes` = no_recalled_notes) %>% 
+    ggplot(aes(x = Attempt, y = `Mean number of recalled notes`, color = 'orange')) +
+      geom_line() +
+      geom_errorbar(aes(ymin = `Mean number of recalled notes`- se, 
+                    ymax = `Mean number of recalled notes` + se), color = 'darkgrey') +
+      theme(legend.position="none") +
+      scale_y_continuous(breaks=10:21, limits = c(13, 21)) +
+      geom_point(color = 'black') +
+      labs(
+        title = "Figure 3",
+        subtitle = "Development of average number of recalled notes across attempt",
+        caption = "Error bars show the standard error."
+      )
+
+```
+
+
+
+
+```{r include = FALSE}
+
+lm.A1 <- lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + (1|unique_melody_name) + (1|p_id), data = main2)
+
+summary(lm.A1)
+
+MuMIn::r.squaredGLMM(lm.A1)
+
+```
+
+
+```{r include = FALSE}
+
+lm.A1.2 <- lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+summary(lm.A1.2)
+
+MuMIn::r.squaredGLMM(lm.A1.2)
+
+```
+
+In the formal mixed effects model where number of recalled notes was dependent variable (Model *A1*), the estimates of the fixed effects coefficients were *B* = 3.53 (*p* < .001) for log attempt and *B* = 5.18 for condition (*p* = .02). The latter result suggests that hearing a melody as a full audio excerpt is associated with five more notes being recalled to an attempt on average. The marginal R^2^ value of the mixed effects model was `r get_r2m(lm.A1)` and the conditional R^2^ value `r get_r2c(lm.A1)` [@nakagawaGeneralSimpleMethod2013]. This suggests that the fixed effects (attempt and condition), whilst significant, explain a relatively small amount of variance compared to the random effects (melody, and participant). Adding an interaction term for the random effects interaction between participant and melody considerably increases the conditional R^2^ value (to `r get_r2c(lm.A1.2)`) and the marginal R^2^ value slightly (to .143). This final model (Model *A1.2*) is shown in Table 5. The increase in number of recalled units across attempts seen here corresponds to previously developed computational models of singing production and general serial recall [@chikhaouiLearningSongACTR2009; @andersonFranSimulationModel1972]. 
+
+
+```{r}
+
+lm.A1.2 |>
+apa_print() |>
+apa_table(caption = "Model A1.2: Mixed effects model regressing number of recalled notes onto attempt and condition. The index 'S' refers to the 'Sound' condition.")
+
+
+```
+
+
+
+
+## Assessment of similarity scores across repeated attempts
+
+To visualise higher level changes in melodic recall performance (indicated by similarity) across attempts, Figure 4 graphs the mean score of each similarity measure (*opti3*, *ngrukkon*, *harmcore* and *rhythfuzz*), as a function of attempt. A linear model (represented by solid-coloured lines) would suggest a general increase across attempt for all variables, except *harmcore*, which appears relatively stable across attempt (see Appendix G for linear model details). However, as seen with number of recalled notes, whilst a linear model predicts the data over the course of six trials reasonably well, for the generally increasing variables (*opti3*, *ngrukkon* and *rhythfuzz*) a non-linear effect (i.e., with diminishing gains across attempt) seems to represent the data better.
+
+
+```{r fig.width = 10, fig.height = 12, warning = FALSE}
+
+by_attempt <- main %>% dplyr::select(attempt, opti3, ngrukkon, harmcore, rhythfuzz)  %>% 
+  tidyr::pivot_longer(cols = c("opti3", "ngrukkon", "harmcore", "rhythfuzz")) %>% 
+  dplyr::rename(measure = name) %>% 
+  data_summary(varname = "value", groupnames = c("measure", "attempt"))
+
+
+ggplot(by_attempt, aes(x = attempt, y = value, group=measure, color=measure)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin=value-se, ymax=value+se), width=.2, position=position_dodge(0.05), color = "black") +
+  geom_line(linetype = "dashed", color = "black", alpha = .5) +
+  geom_smooth(method = "lm", size = .5, se = FALSE) + 
+  xlab("Attempt") + 
+  ylab("Mean Similarity Value") + 
+  facet_wrap(~measure, nrow = 2) +
+      labs(
+        title = "Figure 4",
+        subtitle = "Mean similarity values as a function of attempt.",
+        caption = "Note: Dashed lines represent changes in similarity across each attempt. \n Solid lines represent a line of best fit across all attempts. Error bars represent the SE.") + 
+  theme(plot.caption=element_text(size=7))
+
+
+```
+
+
+```{r include = FALSE}
+
+lm.B1 <- lmerTest::lmer(opti3 ~ condition + log(attempt) + (1|unique_melody_name) + (1|p_id), data = main2)
+
+
+lm.B1.2 <- lmerTest::lmer(opti3 ~ condition + log(attempt) + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+```
+
+
+An equivalent to model A1 was fitted using *opti3* as dependent variable (Model B1). Both predictors were significant in the model: log attempt, $B$ = .07, *p* <. 001;  condition, $B$ = .10  (*p* = .01) The latter suggests that hearing a melody in its full audio is associated with a .10 increase in similarity of recall to target melody, as indicated by *opti3*. The model achieved a marginal R^2^ of .098 and a conditional  R^2^ of .49, again suggesting that fixed effects explain a relatively small amount of variance compared to random effects (melody item and participant). Adding the interaction term between melody item and participant random effects again considerably increased both the marginal R^2^ (to .101) and the conditional  R^2^ (to .71). See Table 6 for the final model  (Model B1.2).
+
+```{r}
+
+lm.B1.2 |>
+apa_print() |>
+apa_table(caption = "Model B1.2: Mixed effects model regressing the similarity of melodic recalls (opti3) onto attempt and condition.")
+
+```
+
+
+
+# Correspondence between number of recalled notes and melodic similarity (opti3)
+
+The development of both overall similarity (*opti3*) and the number of recalled notes across attempt is broadly similar in shape: increasing, with diminishing gains on each attempt. To make this clear, we rescale the number of recalled notes variable to be in the range 0 to 1, like *opti3* and plot them alongside each other in Figure 5.
+
+```{r}
+
+main2 %>% 
+  dplyr::rename(Attempt = attempt) %>% 
+  dplyr::select(Attempt, no_recalled_notes, opti3) %>% 
+  mutate(no_recalled_notes = scales::rescale(no_recalled_notes) ) %>% 
+  tidyr::pivot_longer(no_recalled_notes:opti3, names_to = "Measure", values_to = "Value") %>% 
+  data_summary(varname = "Value", groupnames = c("Attempt", "Measure")) %>% 
+    ggplot(aes(x = Attempt, y = Value, group = Measure, color = Measure)) +
+      geom_line() +
+      geom_errorbar(aes(ymin = Value - se, ymax = Value + se), color = 'darkgrey') +
+      theme(legend.position="none") +
+      geom_point(color = 'black') +
+      labs(
+        title = "Figure 5",
+        subtitle = "Development of mean no. recalled notes (red) and opti3 (blue)",
+        caption = "Note: No. recalled notes was scaled to be [0,1] like opti3. Error bars show the SE."
+      )
+
+```
+
+
+
+This convergence is interesting, and we hence suggest that, in order obtain a comprehensive picture of the cognitive processes involved in melodic recall, it is necessary to model the number of recalled notes alongside overall change in melodic recall performance (here indicated by melodic similarity) across recall attempts. Consequently, we proceed by modelling the two effects via two sets mixed effects models in parallel. We take forward both models *A1.2* and *B2.2* (Tables 5 and 6), where i) condition and log attempt are always included as fixed effects and ii) participant and melody item, plus the interaction between participant and melody item, are random effects, as the basis for the remaining analyses.
+
+Note that, it is not only important to understand the degree to which number of recalled notes and *opti3* converge, but diverge, and hence, measure different constructs. The bivariate correlation between the two is *r* = .42 suggesting that, as expected, they are related to a moderate degree, since as we noted earlier, *opti3* is dependent on the length of comparison targets in a "soft" sense. However, since the correlation is only moderate, it confirms empirically, and with human participant data, that *opti3* measures something beyond the length of comparison targets (i.e., the harmonic, rhythmic and intervallic information it is intended to capture).
+
+
+
+# Melodic feature modelling
+
+
+
+```{r include = FALSE}
+
+lm.A2 <- lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + N + tonalness + i.entropy + step.cont.loc.var + d.entropy  + mean_information_content +  (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+# remove i.entropy, step.cont.loc.var
+
+lm.A2.2 <- lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + N + tonalness + d.entropy + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+
+# remove d.entropy
+
+lm.A2.3 <- lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + N + tonalness + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+
+# remove tonalness
+
+lm.A2.4 <- lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + N + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+# test interaction
+
+lm.A2.5 <- 
+  lmerTest::lmer(no_recalled_notes ~ condition + log(attempt) + N + log(attempt):N + (1|unique_melody_name) + (1|p_id)  + (1|p_id:unique_melody_name), data = main2)
+
+
+```
+
+
+```{r include = FALSE}
+
+lm.B2 <- lmerTest::lmer(opti3 ~ condition + log(attempt) + N + tonalness + i.entropy + step.cont.loc.var + d.entropy + mean_information_content + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+
+# Remove everything except mean_information_content
+
+lm.B2.2 <- 
+  lmerTest::lmer(opti3 ~ condition + log(attempt) + mean_information_content + (1|unique_melody_name) + (1|p_id) + (1|p_id:unique_melody_name), data = main2)
+
+# No features significant, so the model becomes the same as model B1.2
+
+```
+
+
+
+For modeling the memorability of melodies we added *N* (melody length), *tonalness*, *i.entropy*, *step.cont.loc.var*, *d.entropy* and *mean_information_content* as additional predictors to the mixed effect models described before. With all predictors in, the marginal R^2^ increased significantly from `r get_r2m(lm.A1.2)` to `r get_r2m(lm.A2)` when *number of recalled notes* was dependent variable and marginally from `r get_r2m(lm.B1.2)` to `r get_r2m(lm.B2)` when *opti3* was dependent variable. However, after removing non-significant predictors, only *N* was a significant predictor when *number of recalled notes* was dependent variable, and none were significant with *opti3* as dependent variable. In a model with *number of recalled notes* as dependent variable, and only *N* as fixed effect predictor alongside log attempt and condition, the marginal R^2^ was `r get_r2m(lm.A2.4)`, suggesting that the other melodic feature predictors really do not add much explanatory power to the model. In Appendix H, we also present variance inflation factors and partial R^2^ values for diagnostics. Altogether, the interpretation that the non-significance of the other melodic features is due to high collinearity can be ruled out, and it is evident that melody length (*N*) substantially explains variance in *number of recalled note events* by itself. Note also, as shown in Appendix C2, several melodic features have as much variance as melody length, as indicated by higher coefficient of variations, which facilitate the comparison of the SD across measures. This also suggests that melodic features have enough heterogeneity beyond melody length, which empirically has *less* heterogeneity. 
+
+We tested the interaction between *attempt* and *N* in the model with *number of recalled notes* as dependent variable. The interaction term was statistically significant ($B$ = 0.21, *p* < .001), suggesting that the length of the melody differentially affects the number of recalled notes, depending on the attempt number. For this final model (A2.2), the marginal R^2^ value was `r get_r2m(lm.A2.5)` and the conditional R^2^ value  `r get_r2c(lm.A2.5)`.
+
+<!-- NB. we refer to it as A2.2 in-text), but it is A2.5 from the perspective of our removing predictors -->
+
+
+## Individual differences modelling
+
+
+
+### Individual differences in changes of number of recalled notes across attempt
+
+Figure 6 presents changes in number of recalled notes across attempt, based on the median split on musical experience described earlier. Broadly speaking, the pattern of results in low and high musical experience groups is similar, with a non-linear increase in number of recalled notes across attempt for both groups. However, whilst both groups submit a similar number of recalled notes to the first attempt on average, the higher musical experience group tend to submit more notes to each subsequent attempt (however, see Appendix F1 for a by-participant comparison). This is most notable in attempt two, where there is a larger increase in notes for higher musically experienced participants than for lower musically experienced participants. A linear model across all trials does not seem to describe the data well, but is useful for comparing the general slopes, which appear to be approximately the same, though the higher musically experienced group's slope appears somewhat steeper. This suggests that higher musically experienced participants may be able to learn more quickly by extracting more melody notes in memory on each successive attempt compared to lower musically experienced participants. We do not model this artificial dichotomisation of musical experience formally.
+
+
+
+```{r, warning = FALSE}
+
+ggplot(by_attempt_non, aes(x = attempt, y = value, group=musician, color=musician)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin=value-se, ymax=value+se), width=.2, position=position_dodge(0.05), color = "black") +
+  geom_line(linetype = "dashed", color = "black", alpha = .5) +
+  geom_smooth(method = "lm", size = .5, se = FALSE) + 
+  labs(x = "Attempt", y = "Mean of Measure") +
+  # Reviwer asked for lines to be on top of each other
+  #facet_wrap(vars(measure, forcats::fct_rev(musician)), nrow = 1) +
+  theme(legend.position = "none",
+        plot.subtitle=element_text(size=6)
+        ) +
+      labs(
+        title = "Figure 6",
+        subtitle = "Development of average number of recalled notes across attempt, factored by level of musical experience",
+        caption = "Error bars represent the standard error."
+      )
+
+```
+
+### Individual differences in similarity changes across attempt
+
+The corresponding figure for similarity (*opti3*), Figure 7, suggests that the higher musical experience group generally have better melodic recall, as indicated by generally higher similarity scores across trials (i.e., a larger intercept). The slopes (i.e., rate of increase) across attempts appears to be approximately similar, except for with the *ngrukkon* measure, which suggests that, across successive attempts, those with more musical experience improve the interval accuracy of their recalls more effectively than participants with lower musical experience. The difference in slopes is also somewhat notable for overall similarity (*opti3*). See an alternative by-participant visualisation in Appendix F2.
+
+
+```{r fig.width=10,fig.height=13}
+
+
+
+by_attempt2 <- main %>% 
+  dplyr::select(attempt, opti3, ngrukkon, harmcore, rhythfuzz, musician)  %>% 
+  tidyr::pivot_longer(cols = c("opti3", "ngrukkon", "harmcore", "rhythfuzz")) %>% 
+  dplyr::rename(measure = name) %>% 
+  data_summary(varname = "value", groupnames = c("measure", "attempt", "musician")) 
+
+ggplot(by_attempt2, aes(x = attempt, y = value, group=measure, color=measure)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin=value-se, ymax=value+se), width=.2, position=position_dodge(0.05), color = "black") +
+  geom_line(linetype = "dashed", color = "black", alpha = .5) +
+  geom_smooth(method = "lm", size = .5, se = FALSE) + 
+  labs(x = "Attempt", y = "Mean") +
+  facet_wrap(vars(measure, forcats::fct_rev(musician)), nrow = 4) +
+      labs(
+        title = "Figure 7",
+        subtitle = "Similarity scores as a function attempt, dichotomised on musical experience",
+        caption = "Note: Dashed lines represent changes in similarity across each attempt. Solid lines represent a line of best fit across all attempts."
+      )
+
+
+```
+
+
+
+```{r include = FALSE}
+
+melodic_recall_ability_opti3 <- ranef(lm.A2.5)$p_id %>% 
+  tibble::rownames_to_column() %>% 
+  dplyr::rename(p_id = rowname, Melodic_Recall_Opti3 = `(Intercept)`)
+
+melodic_recall_ability_non <- ranef(lm.B1.2)$p_id %>% 
+  tibble::rownames_to_column() %>% 
+  dplyr::rename(p_id = rowname, Melodic_Recall_No_Notes = `(Intercept)`)
+
+
+
+main <- main %>% 
+  left_join(melodic_recall_ability_opti3, by = "p_id") %>% 
+  left_join(melodic_recall_ability_non, by = "p_id")
+
+demographics <- demographics %>% 
+  left_join(melodic_recall_ability_opti3, by = "p_id") %>% 
+  left_join(melodic_recall_ability_non, by = "p_id")
+
+```
+
+
+
+```{r include = FALSE}
+
+lmA3 <- lm(Melodic_Recall_No_Notes ~ age + edulevel + sex + musical_experience, data = demographics)
+
+summary(lmA3)
+
+lmA3.2 <- lm(Melodic_Recall_No_Notes ~ musical_experience, data = demographics)
+
+summary(lmA3.2)
+
+```
+
+
+```{r include = FALSE}
+
+lmB3 <- lm(Melodic_Recall_Opti3 ~ age + edulevel + sex + musical_experience, data = demographics)
+
+summary(lmB3)
+
+lmB3.2 <- lm(Melodic_Recall_Opti3 ~ musical_experience, data = demographics)
+
+
+```
+
+
+To model and explain some of the random effects variance attributable to participant, random effect intercepts were extracted for each participant, from each of the two most-developed models described earlier (A2.2, B1.2). These were taken to represent two participant-level latent melodic recall processes: one specifically to do with abilities concerning the number of recalled notes, and the other with overall level of melodic recall (as indicated by the *opti3* measure of similarity). When regressing the participant random intercepts from the *number of recalled notes* model onto *musical experience*, *age*, *edulevel* and *sex* in a general linear model, only musical experience was a significant predictor. Removing the other variables left a model with a moderate R^2^ value of `r round(summary(lmA3.2)$r.squared, 2)` (adjusted = `r round(summary(lmA3.2)$adj.r.squared, 2)`), *p* < .01, and musical experience as the sole significant predictor, $B$ = `r round(summary(lmA3.2)$coefficients['musical_experience', 'Estimate'], 2)`, *p* < .01. A similar pattern was seen for the model built with *opti3* as dependent variable: only *musical experience* was a significant predictor ($B$ = `r round(summary(lmB3.2)$coefficients['musical_experience', 'Estimate'], 2)`, *p* < .01). This model had a small R^2^ value of `r round(summary(lmB3.2)$r.squared, 2)` (adjusted = `r round(summary(lmB3.2)$adj.r.squared, 2)`).
+
+
+## Mediation analysis
+
+Earlier, when adding melodic features as fixed effects to the base mixed effects models described above, we found that only *N* was a statistically significant predictor of performance when *number of recalled notes* was dependent variable and none when *opti3* was dependent variable. However, as noted previously, there is a correspondence between number of recalled notes and overall similarity across attempts (see Figure 5). Perhaps melody length (*N*) could indeed predict overall performance (*opti3*), via an effect on number of recalled notes. This hypothesis can be implemented as a mediation analysis: melody length predicts performance, via the number of recalled notes submitted to the trial. We computed this hypothesis using the *mediate* function from the *R* package *mediation* (*v* 4.5.0). *N* was the single predictor, *opti3* was the dependent variable and *number of recalled notes* was the mediator. Unfortunately, it is not possible to specify more than one random effect with this functionality, so two separate models were computed, one with melody item and another with participant as random effects. 
+
+
+
+```{r echo = FALSE, include = FALSE}
+
+# start with only N a priori
+
+options(scipen = 999)
+
+# mediation
+
+# with item
+
+fit.totaleffect <- lme4::lmer(opti3 ~ N + condition + log(attempt) + log(attempt):N + (1|unique_melody_name), data = na.omit(main2))
+
+
+##
+
+fit.mediator <- lme4::lmer(no_recalled_notes ~ N + condition + log(attempt) + log(attempt):N + (1|unique_melody_name), data = na.omit(main2))
+
+fit.mediator.lmerTest <- lmerTest::lmer(no_recalled_notes ~ N + condition + log(attempt) + log(attempt):N + (1|unique_melody_name), data = na.omit(main2))
+
+
+fit.dv <- lme4::lmer(opti3 ~ no_recalled_notes + N + condition + log(attempt) + log(attempt):N + (1|unique_melody_name), data = na.omit(main2))
+
+fit.dv.lmerTest <- lmerTest::lmer(opti3 ~ no_recalled_notes + N + condition + log(attempt) + log(attempt):N + (1|unique_melody_name), data = na.omit(main2))
+
+```
+
+
+```{r, eval = FALSE}
+
+
+results <- mediation::mediate(fit.mediator, fit.dv, treat = 'N', mediator = 'no_recalled_notes')
+
+
+summary(results)
+
+results.2 <- mediation::mediate(fit.mediator, fit.dv, treat = c('N', 'condition'), mediator = 'no_recalled_notes')
+results.3 <- mediation::mediate(fit.mediator, fit.dv, treat = c('N', 'condition', 'log(attempt)'), mediator = 'no_recalled_notes')
+
+# interaction doesn't work:
+
+# results.4 <- mediation::mediate(fit.mediator, fit.dv, treat = c('N', 'condition', 'log(attempt)', 'N:log(attempt)'), mediator = 'no_recalled_notes')
+
+results.4 <- mediation::mediate(fit.mediator, fit.dv, 
+                                treat = c('N', 'condition', 'log(attempt)'), 
+                                covariates = c('N', 'log(attempt)'),
+                                mediator = 'no_recalled_notes')
+
+
+
+
+```
+
+
+
+In the model with melody item as random effect, the Average Direct Effect $B$ = .07 [-0.005, 0.15], *p* = .07 was not statistically significant. However, the Total Effect $B$ = 0.11 [0.03, 0.20], *p* = .001 and the Average Causal Mediation Effect $B$ = .04 [0.01, 0.07], *p* = .01 were statistically significant. This suggests that longer melodies lead to more note events being recalled (because the target melody is longer, so requires more notes), which in turn increases the *opti3* score. See Figure 8 for a representation of this model.
+
+
+```{r fig.height = 12, fig.width = 15}
+
+pos <- cbind (c(0.5, 0.5, 0.50), # x
+              c(0.5, 0.8, 0.20)) # y
+
+data <- c(0, "'.39***'", 0, # no.note.events
+          0, 0, 0, # N
+          "'.02***'", 0, 0) # opti3
+
+
+M <- matrix(nrow=3, ncol=3, byrow = TRUE, data=data)
+
+
+plot.new()
+title(main = "Figure 8", adj = 0, cex.main=2)
+title(sub = "Mediation model with melody item as random effect, melodic features as predictors, \n number of recalled notes as mediator and opti3 as dependent variable.", line=-49, adj = 0, cex.sub=1.5)
+
+plotmat(M, pos = pos, add = TRUE,
+      name = c("No. Recalled Notes","Melody Length", "Similarity to Target Melody (opti3)"),
+      box.type = "rect", 
+      curve=0,
+      dtext = 0.15,
+      box.size = 0.22, 
+      box.prop=0.3,
+      arr.length = 0.9,
+      box.cex = 2, 
+      #cex.txt = 1.5,
+      latex = TRUE)
+
+
+
+```
+
+
+
+```{r echo = FALSE, include = FALSE}
+
+# with p_id
+
+# check sig predictors first
+
+
+fit.totaleffect2 <- lme4::lmer(opti3 ~ N + condition + log(attempt) + log(attempt):N + (1|p_id), data = na.omit(main2))
+
+fit.mediator2 <- lme4::lmer(no_recalled_notes ~ N + condition + log(attempt) + log(attempt):N + (1|p_id), data = na.omit(main2))
+
+fit.mediator2.lmerTest <- lmerTest::lmer(no_recalled_notes ~ N + condition + log(attempt) + log(attempt):N + (1|p_id), data = na.omit(main2))
+
+
+fit.dv2 <- lme4::lmer(opti3 ~ no_recalled_notes + condition + N + log(attempt) + log(attempt):N + (1|p_id), data = na.omit(main2))
+
+fit.dv2.lmerTest <- lmerTest::lmer(opti3 ~ condition + no_recalled_notes + N + log(attempt) + log(attempt):N + (1|p_id), data = na.omit(main2))
+
+```
+
+
+```{r, echo = FALSE, include = FALSE, eval = FALSE}
+
+results2 <- mediation::mediate(fit.mediator2, fit.dv2, treat = c('N', 'condition', 'log(attempt)'), mediator = 'no_recalled_notes')
+
+# with interaction
+
+results2.int <- mediation::mediate(fit.mediator2, fit.dv2, 
+                                treat = c('N', 'condition', 'log(attempt)'), 
+                                covariates = c('N', 'log(attempt)'),
+                                mediator = 'no_recalled_notes')
+
+```
+
+In the model with participant as random effect, the Average Direct Effect $B$ = .05 [0.002, 0.09], *p* = .04, the Total Effect $B$ = 0.10 [0.05, 0.14], *p* < .001 and Average Causal Mediation Effect  $B$ = .05 [0.03, 0.07], *p* < .001 were statistically significant. This is a similar pattern as the last model, with similar coefficients, implying the same interpretation we gave earlier. However, we suspect that the Average Direct Effect being statistically significant here is spurious and would vanish were we able to model melody item as a random effect simultaneously. We do not represent this second model as a figure because its interpretation is then similar to that presented in Figure 8.
+
+
+That the Average Causal Mediation Effect was statistically significant in both models suggests that melody length can indeed be a predictor of overall performance (as indicated by *opti3*), at least partly via its influence on number of recalled notes submitted to an attempt. When comparing nested models with *N* as fixed effect predictor of *opti3*, with and without number of recalled notes, the additional variance explained when including number of recalled notes was justified: in the case of the model with melody item as random effect, the model with *number of recalled notes* had a lower *BIC* value (-1614) than the one with (*BIC* = -1310); the same was true for the model with participant as random effect (*BIC* = -1322 and *BIC* = -1075 respectively). See Tables 7 and 8, respectively.
+
+
+\newpage
+
+
+```{r message = FALSE}
+
+panderOptions('round', 2)
+
+suppressMessages({ anova(fit.dv, fit.totaleffect) }) %>% 
+  dplyr::select(-deviance) %>% 
+  mutate(Chisq = as.character(round(Chisq), 2),
+         Df = as.character(Df),
+         `Pr(>Chisq)` = case_when(`Pr(>Chisq)` < .001 ~ "p < .001")) %>% 
+  tidyr::replace_na(list("Pr(>Chisq)" =  " ",
+                         "Chisq" =  " ",
+                         "Df" =  " ")) %>% 
+  pander(caption = "Table 7. Model comparison with and without number of recalled notes as fixed effects predictor. fit.dv = with number of recalled notes; fit.totaleffect = without number of recalled notes")
+
+```
+
+
+
+
+```{r message = FALSE}
+
+panderOptions('round',2)
+
+suppressMessages({ anova(fit.dv2, fit.totaleffect2) }) %>% 
+  dplyr::select(-deviance) %>% 
+  mutate(Chisq = as.character(round(Chisq), 2),
+         Df = as.character(Df),
+         `Pr(>Chisq)` = case_when(`Pr(>Chisq)` < .001 ~ "p < .001")) %>% 
+  tidyr::replace_na(list("Pr(>Chisq)" =  " ",
+                         "Chisq" =  " ",
+                         "Df" =  " ")) %>% 
+  pander(caption = "Table 8. Model comparison with and without number of recalled notes as fixed effects predictor. fit.dv2 = with number of recalled notes; fit.totaleffect2 = without number of recalled notes.")
+
+```
+
+
+
+# Modelling the correspondence between *opti3* and *number of recalled notes* revisited
+
+Sloboda and Parker (1985) observed that the number of errors are relatively stable across attempts, whereas the number of correct notes increase in a non-linear fashion. The increase in number of correct notes appears to correspond to the increase in number of recalled notes that are being submitted per attempt, which too increases non-linearly across attempt. However, this was not formally modeled in their original study. With our data, Figure 9 visualises the number of recalled notes per trial as a proportion of correct and incorrect notes, along with *opti3*, rescaled to be on the same scale as number of recalled notes. Figure 9 highlights two general patterns: i) the non-linear increases of number of recalled notes and similarity (overall performance) across successive attempts, alongside one another; ii) the stability of number of errors. 
+
+
+```{r, fig.width = 6, fig.height = 6, warning = FALSE}
+
+dvs <- main %>% 
+  dplyr::select(opti3, ngrukkon, harmcore, rhythfuzz,
+                proportion_of_correct_note_events, proportion_of_correct_note_events_octaves_allowed, proportion_of_correct_note_events_controlled_by_stimuli_length_log_normal, 
+                proportion_of_stimuli_notes_found, 
+                proportion_of_stimuli_notes_found_octaves_allowed, 
+                no_errors_octaves_allowed, no_correct_octaves_allowed, no_errors, no_correct, no_recalled_notes)
+
+
+by_attempt3 <- dvs %>% mutate(Attempt = as.integer(main$attempt)) %>% 
+  dplyr::rename(
+    `No. Recalled Notes` = no_recalled_notes,
+    `No. Correct (Octaves Allowed)` = no_correct_octaves_allowed,
+    `No. Errors (Octaves Allowed)` = no_errors_octaves_allowed,
+    `No. Correct` = no_correct,
+    `No. Errors` = no_errors
+  )
+
+
+by_attempt3_long <- by_attempt3 %>% 
+  tidyr::pivot_longer(cols = opti3:`No. Recalled Notes`, names_to = "Measure") %>% 
+  data_summary(varname = "value", groupnames = c("Measure", "Attempt"))
+
+
+by_attempt3_long_and_by_mus <- main %>% 
+  mutate(attempt = as.numeric(attempt)) %>% 
+  dplyr::select(attempt, opti3, no_errors, no_correct, no_recalled_notes, 
+                musician, no_correct_octaves_allowed, no_errors_octaves_allowed) %>% 
+  dplyr::rename(
+    `No. Recalled Notes` = no_recalled_notes,
+    `No. Correct (Octaves Allowed)` = no_correct_octaves_allowed,
+    `No. Errors (Octaves Allowed)` = no_errors_octaves_allowed,
+    `No. Correct` = no_correct,
+    `No. Errors` = no_errors,
+    Musician = musician,
+    Attempt = attempt
+  ) %>% 
+  tidyr::pivot_longer(cols = opti3:`No. Recalled Notes`, names_to = "Measure") %>% 
+  data_summary(varname = "value", groupnames = c("Musician", "Measure", "Attempt"))
+
+
+by_attempt3_scaled <- by_attempt3 %>% 
+  dplyr::mutate(dplyr::across(.fns = scales::rescale), Attempt = main$attempt) %>% 
+  tidyr::pivot_longer(cols = opti3:`No. Recalled Notes`, names_to = "Measure") %>% 
+   data_summary(varname = "value", groupnames = c("Measure", "Attempt"))
+
+by_attempt3_c_vs_e_opti <- by_attempt3_long %>% 
+  filter(Measure == "opti3") %>% 
+  mutate(rescaled_opti3 = scales::rescale(value, from = 0:1, to = c(0,40)), 
+         rescaled_se= scales::rescale(se, from = 0:1, to = c(0,40)))
+
+
+by_attempt3_c_vs_e_opti_and_by_mus <- by_attempt3_long_and_by_mus %>% 
+  filter(Measure == "opti3") %>% 
+  mutate(rescaled_opti3 = scales::rescale(value, from = 0:1, to = c(0,40)), 
+         rescaled_se= scales::rescale(se, from = 0:1, to = c(0,40)))
+
+by_attempt3_c_vs_e <- by_attempt3_long %>% 
+  filter(Measure %in% c("No. Correct", "No. Errors"))
+  
+by_attempt3_c_vs_e_allowed <- by_attempt3_long %>% 
+  filter(Measure %in% c("No. Correct (Octaves Allowed)", "No. Errors (Octaves Allowed)")) %>% 
+  mutate(Measure_Renamed = 
+           case_when(Measure == 'No. Correct (Octaves Allowed)' ~ "No. Correct", TRUE ~ "No. Errors"))
+
+# Note that there are still two different types of correct/error variables. We are just renaming the "octaves allowed" one for the paper, since we don't present both separately.
+
+tmpdt <- by_attempt3_c_vs_e_allowed %>% 
+  dplyr::mutate(Attempt = as.factor(Attempt)) %>% 
+  dplyr::group_by(Attempt) %>% 
+  dplyr::summarise(`No. Recalled Notes` = sum(value, na.rm = TRUE),
+                  se = mean(se, na.rm = TRUE)) %>% 
+  dplyr::ungroup()
+
+p1 <- ggplot(mapping = aes(y=value, x=Attempt)) + 
+  geom_bar(mapping = aes(fill=Measure_Renamed, y=value, x=Attempt), 
+           data = by_attempt3_c_vs_e_allowed, position="stack", stat="identity") +
+  
+    
+      geom_errorbar(aes(ymin=value-se, ymax=value+se), width=.2,
+                  position=position_dodge(0.05), color = "black", data = by_attempt3_c_vs_e_allowed %>% filter(Measure_Renamed == "No. Errors")
+                  ) +
+
+   # geom_errorbar(aes(ymin=`No. Recalled Notes`-se, ymax=`No. Recalled Notes`+se), width=.2,
+   #                position=position_dodge(0.05), color = "black", data = tmpdt) +
+   # 
+  scale_fill_manual("legend", values = c("No. Errors" = "#d65656", "No. Correct" = "#7ad656")) + 
+  geom_line(color = 'blue', data = by_attempt3_c_vs_e_opti, mapping = aes(x = Attempt, y = rescaled_opti3, group = 1)) + 
+  geom_point(mapping = aes(x = Attempt, y = rescaled_opti3), color = "black", data = by_attempt3_c_vs_e_opti) +
+    geom_errorbar(aes(ymin=rescaled_opti3-rescaled_se, ymax=rescaled_opti3+rescaled_se), width=.2, 
+                  position=position_dodge(0.05), color = "black", data = by_attempt3_c_vs_e_opti) +
+  
+  ylab("Number of Recalled Notes") +
+  theme(legend.title= element_blank())  +
+      labs(
+        title = "Figure 14",
+        subtitle = "Number of correct notes, opti3 and number of recalled notes increase across attempts, but no. errors do not.",
+        caption =  "The entire area of each bar is the number of recalled notes. The blue line is opti3 scores rescaled to be on the same scale as number of recalled notes."
+      ) + 
+  theme(plot.caption=element_text(size=5),
+        plot.subtitle=element_text(size=7))
+
+
+p1_by_mus <- ggplot(mapping = aes(y=value, x=Attempt)) + 
+  geom_bar(mapping = aes(fill=Measure_Renamed, y=value, x=Attempt), 
+           data = by_attempt3_c_vs_e_allowed, position="stack", stat="identity") +
+  scale_fill_manual("legend", values = c("No. Errors" = "#d65656", "No. Correct" = "#7ad656")) + 
+  geom_line(color = 'blue', data = by_attempt3_c_vs_e_opti_and_by_mus, mapping = aes(x = Attempt, y = rescaled_opti3, group = 1)) + 
+  geom_point(mapping = aes(x = Attempt, y = rescaled_opti3), color = "black", data = by_attempt3_c_vs_e_opti_and_by_mus) +
+    geom_errorbar(aes(ymin=rescaled_opti3-rescaled_se, ymax=rescaled_opti3+rescaled_se), width=.2, 
+                  position=position_dodge(0.05), color = "black", data = by_attempt3_c_vs_e_opti_and_by_mus) +
+  ylab("Number of Recalled Notes") +
+  theme(legend.title= element_blank())  +
+      labs(
+        title = "Figure 9",
+        subtitle = "Number of correct notes, opti3 and number of recalled notes increase across attempts, but no. errors do not.",
+        caption =  "The entire area of each bar is the number of recalled notes. The blue line is opti3 scores rescaled to be on the same scale as number of recalled notes."
+      ) + 
+  theme(plot.caption=element_text(size=5),
+        plot.subtitle=element_text(size=7)) +
+  facet_wrap(~Musician)
+
+
+p2 <- by_attempt3_long %>% 
+  filter(Measure %in% c("No. Correct (Octaves Allowed)", "No. Errors (Octaves Allowed)", "No. Recalled Notes"))
+  
+by_attempt3_c_vs_e_allowed_p <- ggplot(by_attempt3_c_vs_e_allowed, aes(x = Attempt, y = value, group=Measure, color=Measure)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin=value-se, ymax=value+se), width=.2, position=position_dodge(0.05), color = "black") +
+  geom_line(alpha = .5) +
+  ylab("mean")
+  
+# grid.arrange(p1, by_attempt3_c_vs_e_allowed_p, nrow = 1)
+
+p1
+
+```
+
+
+Figure 9 suggests that the number of recalled notes to each attempt could, in turn, be a predominant factor in determining the overall improvement in similarity across each attempt. Specifically: i)	across attempts, participants submit more notes on each new attempt; ii)	The number of errors stays approximately the same across attempt, but the overall number of correct notes go up across attempts. In other words: more of the new recalled notes are correct; iii)	Consequently, similarity goes up over attempts. We have already modelled effects i) and iii) (Tables 5 and 6). To model ii) we fit a two separate linear regression models where attempt is a predictor of either correct notes or errors. As shown descriptively in Figure 9, in the model where no. correct notes is dependent variable, attempt is a significant predictor ($\beta = 0.02$; *p* < .001).  However, when no. errors is dependent variable, attempt is non-significant with a near-zero $\beta$-coefficient ($\beta = 0.00$; *p* =.27).
+
+```{r, include = FALSE}
+
+tmp_correspondence_mod_dat <- main %>% 
+  dplyr::mutate(attempt = as.numeric(attempt),
+         no_recalled_notes = scales::rescale(no_recalled_notes),
+         no_errors_octaves_allowed = scales::rescale(no_errors_octaves_allowed),
+         no_correct_octaves_allowed = scales::rescale(no_correct_octaves_allowed),
+         log_attempt = log(attempt),
+         ratio_correct_errors = no_correct / no_errors,
+         ratio_correct_errors = dplyr::case_when(is.infinite(ratio_correct_errors) ~ as.numeric(NA), TRUE ~ ratio_correct_errors)
+         )
+
+
+corr_md1 <- lmerTest::lmer(no_recalled_notes ~ attempt + attempt^2 + (1|unique_melody_name) + (1|p_id), data = tmp_correspondence_mod_dat) 
+
+corr_md2 <- lmerTest::lmer(no_errors_octaves_allowed ~ attempt + attempt^2 + (1|unique_melody_name) + (1|p_id), data = tmp_correspondence_mod_dat) 
+
+corr_md3 <- lmerTest::lmer(no_correct_octaves_allowed ~ attempt + attempt^2 + (1|unique_melody_name) + (1|p_id), data = tmp_correspondence_mod_dat)
+
+
+corr_md4 <- lmerTest::lmer(ratio_correct_errors ~ attempt + attempt^2 + (1|unique_melody_name) + (1|p_id), data = tmp_correspondence_mod_dat)
+
+
+#corr_md1_tab <- sjPlot::tab_model(corr_md1)
+corr_md2_tab <- sjPlot::tab_model(corr_md2)
+corr_md3_tab <- sjPlot::tab_model(corr_md3)
+#corr_md4_tab <- sjPlot::tab_model(corr_md4)
+
+#corr_md1_tab
+corr_md3_tab
+corr_md2_tab
+#corr_md4_tab
+
+```
+
+
+
+
+# Discussion
+
+
+In Experiment 2, we sought to study melodic learning using the melodic recall paradigm. First, we were interested in assessing how melodic recall changes across multiple attempts. Second, we aimed to assess whether certain musical features could predict performance on the task. Third, we contended that modelling the change in number of recalled notes submitted to a trial was important and noted that such modelling was omitted from previous melodic recall research [@ogawaModificationMusicalSchema1995; @slobodaMusicalMindCognitive1985; @zielinskaMemorisingTwoMelodies1992]. Other literature describing non-musical verbal recall [e.g., @andersonFranSimulationModel1972] has already described some relevant models which serve as non-musical analogues to the observations @slobodaImmediateRecallMelodies1985  made, that the number of recalled notes increase across attempts. Taking inspiration from the serial recall literature [@andersonFranSimulationModel1972; @chikhaouiLearningSongACTR2009], we modeled the change in number of recalled notes across attempt, alongside changes in overall melodic similarity. We investigated how both relate to individual differences and melodic features and, in the end, suggested how the variables can be combined in an integrative fashion via mediation analysis.
+
+
+## How do we learn melodies?
+
+To understand how we learn melodies, we studied how both the number of recalled notes and overall similarity change across the time course of six attempts. The number of recalled notes starts from an incomplete recall in attempt one, with each subsequent attempt adding more notes than the previous. This grows as an exponential curve which asymptotes at the number of notes in a melody, with six attempts potentially not being enough for all melodies. These results are similar to those presented in the (non-musical) free recall literature, where the learning curve approximates an exponential curve with an asymptote equal to the number of items in a target list [@andersonFranSimulationModel1972; @murdockjr.ImmediateRetentionUnrelated1960]. The exact shape of this curve depends primarily on the number of notes in the target melody and the participant. Generally, similarity between the target melody and the sung recall increases across attempts too, suggesting incremental learning across repetitions. This is the case for overall composite melodic similarity (*opti3*) and the constituent parts of that: rhythmic similarity (*rhythfuzz*) and note similarity (*ngrukkon*). However, harmonic similarity (*harmcore*) does not change across attempt. This has previously been interpreted as suggesting that tonality is extracted earlier in attempts [@slobodaImmediateRecallMelodies1985], whereas other features leave more room for improvement.
+
+In general, we argue that the patterns in our data are not sufficient to argue that certain musical features are extracted earlier or more readily than others. This may strike the reader as curious, since our data shows similar patterns to those reported previously by @slobodaImmediateRecallMelodies1985 (i.e., harmonic learning is stable relative to other domains, such as rhythm and intervallic structure, which clearly increase across attempts). The difference is in our interpretation. We suggest that, simply because harmonic learning does not increase across attempts, it does not prove that harmony is extracted earlier or more readily in memory, only that it does not increase across attempts, for some reason currently unknown. Whilst the melodies we and other previous studies used as stimuli may be in different keys to each other, *within* each melody there tends to only be a single key (i.e., there are no modulations). However, melodies may visit different related modalities within a single key (e.g., chord I going to its dominant). In this sense, harmony and tonality are not "manipulated" to the same degree as intervals and rhythm. But, our approach was to use melodies from real popular music songs, without artificial manipulation. Consequently, this simply implies that, since Western pop music generally contains melodies in a single key, they naturally contain little tonal variance, whereas intervallic and rhythmic structure naturally have more variance. Hence, without manipulating the harmonic structure of melodies to contain more tonal variance (changing key/tonal centre), we can only comment on the statistical regularities of melodies that arise in popular music, and their incidental association with memorability. To establish whether tonality is extracted more easily than other features, beyond its natural variance, further research would need to use melodies which more clearly change key. Then, we suspect that we would then observe clear improvements across multiple attempts in the harmonic domain too.
+
+Instead of representations for musical features developing in memory separately, we suggest that representations for melodies may build up simultaneously across domains. Not only would this be more cognitively efficient, but it would be in line with the tendency for different melodic features to correlate with one another [@bakerModelingMelodicDictation2019]. In other words, if different features correlate with one another (e.g., phrase endings contain both longer notes and more salient scale degrees, like the tonic), the brain should implicitly extract such co-occurring statistical regularities [@pearceStatisticalLearningProbabilistic2018]. Whether or not this particular interpretation is true, we highlight our finding that improvement *can* be indicated across trials, which *not* in accordance with @slobodaImmediateRecallMelodies1985, who only observed that attempts got longer (i.e., more note events were recalled), but not better. That both number of recalled notes and performance increase across trials has been observed in other domains too [e.g., see @kohMemoryLearningMusic2002].
+
+
+With respect to individual differences, firstly, in our mixed effects model we found an interaction between the random effect of participant and the random effect of melody. This suggests that certain melodies are more readily remembered or learned by certain participants than others. Broadly, this could be because some participants have previously implicitly learned similar melodies to those they were tested with. Alternatively, perhaps some melodies contain features which rely more on musical vs. nonmusical memory than others: the former might benefit highly musically experienced participants, and the latter, those with very good non-musical memory, but not necessarily very good music-specific memory. In this way, we also observed how, generally, participants with higher musical experience seem to perform better and demonstrate steeper learning slopes, suggesting that they learn melodies more quickly on average, indicated also by musical experience being a significant predictor of both number of recalled notes and overall similarity. However, this is not the case with all participants (see Appendix F1). Some participants low on musical experience can still learn quickly across trials presumably because, even though they have low levels of musical experience, they can nonetheless make large improvements over trials, probably as a function of other abilities, such as their general working memory. As explored in @silasAssociationsMusicTraining2022, high general working memory may *predispose* people towards music training, explaining the general finding that musicians/those with more music training tend to have higher general working memory abilities [@talaminiMusiciansHaveBetter2017; @talaminiWorkingMemoryMusicians2016]. Thus, at least some of the variance which explains musicians' superior *musical* abilities is attributable to their already very good general working memory. The role of general working memory probably also explains why the number of recalled notes increases across attempts, reflecting general capacity constraints [@cowanMagicalMysteryFour2010], rather than music-dependent memory.
+
+In our data, and as Sloboda and Parker (1985) previously noted, it seemed that a dominant factor in performance is the number of recalled notes submitted to an attempt. This effect might be more to do with sheer rote repetition (i.e., multiple attempts), rather than extracting musical features. In this way, each attempt is a new iteration adding more note events to the long-term memory store for a particular melody. Whilst we would expect the extraction of musical features to somewhat mitigate general capacity limits (because structure helps memorability @gobetChunkingMechanismsHuman2001; @gobetChunkingModelsExpertise2005; @thalmannHowDoesChunking2019; @mullensiefenRoleFeaturesContext2014), perhaps it is not so surprising that the sheer number of recalled notes might be so influential.  With respect to general theories of working memory capacity constraints, the lengths of the melodies we used were relatively long (*N* = 15-48, *M* = 25.39, *SD* = 8.67). Even though in the real world melodies tend to be longer than this, our melodies reflect good ecological validity (being taken from commercial pop songs), and other melodic features are relevant to memory, it still seems reasonable to suggest that central capacity limits in working memory could be broadly responsible for the producing the constraints on number of recalled notes produced in an attempt, as we and Sloboda and Parker (1985) observed [@cowanMagicalMysteryFour2010; @millerMagicalNumberSeven1956; @shiffrinSevenMinusTwo1994; @vergauweMentalProcessesShare2010]. This is at least the case for when melodies are long enough (e.g., 15-48 notes) to require multiple attempts to sing back in full. In other sung recall research with short unknown melodies 3-15 notes in length [@silasMemorabilitySonicLogos2023; @silasSingingAbilityAssessment2023], where it is conceivable to sing back a melody in one attempt, we have been able to successfully connect melodic features to melodic similarity (*opti3*) directly. This suggests that, particularly with longer melodies, general memory capacities are important to include in modelling, beyond musical features and musical memory [@silasAssociationsMusicTraining2022]. 
+
+## What makes melodies difficult to remember?
+
+Consequently, when including variables to indicate melodic complexity as predictors in our mixed effects model, we found that they were not significant predictors of melodic recall performance with *opti3* as dependent variable. As noted, however, the number of recalled notes seemed to be a main factor that might be dominating overall melodic recall performance - and melody length (*N*) was a significant predictor of number of recalled notes. That our measure of similarity, *opti3*, also across trials indicated that similarity might increase predominantly as a function of the number of recalled notes. Taking this observation into account and including *number of recalled notes* as a mediator between melody length (*N*) and *opti3* as dependent variable, connected melody length to *opti3*, as indicated by the average indirect causal effect being statistically significant. This suggested that the length of the target melody predicts melodic recall performance via the sheer number of recalled notes submitted to a trial attempt. Specifically, longer melodies tend to lead to more notes being recalled (since they are longer, and require more notes); more notes being recalled tends to increase overall similarity, but longer melodies are also more difficult to recall.
+
+Non-musical models of serial recall predict similar effects to those seen in our data. For example, as @andersonFranSimulationModel1972 notes, @murdockjr.ImmediateRetentionUnrelated1960 "concluded that the free recall learning curve was exponential with an asymptote equal to the number of words in the list". A similar asymptoting effect can be seen in our data, although, lower than the average number of notes in a target melody. This might suggest that, whilst musical features could make melodies more or less difficult to remember, perhaps they are secondary to the sheer length of the melody itself, and the current working memory load [@baddeleyWorkingMemory1974], at least: i) with the current melody set and data and ii) when the length of melodies are long enough to require multiple attempts to remember all the notes. However, with shorter melodies, melodic features should matter more than the overall length. Consequently, when studying melodic recall, both musical features and the sheer number of recalled notes should be integratively modeled. In this paper, we did this via mediation modelling. In further research, more detailed relationships including other variables (e.g., musical training or general musical sophistication, general working memory) should be explored, using larger and more heterogenous samples of both melodies and participants.
+
+Lastly, the experimental factor condition (audio vs. *MIDI*) was a significant predictor of performance. This suggests that when a melody is learned from its full audio, rather than symbolic representation, it is more easily learned. Presumably, this is because acoustic features help learning [@salakkaWhatMakesMusic2021], as well as other cues like lyrics and the human voice, which may help memory through the eliciation of verbal memory and social psychological systems [@claytonSocialPersonalFunctions2008; @tarrMusicSocialBonding2014] respectively.
+
